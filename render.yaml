@@ -1,0 +1,10 @@
+# Render Blueprint — lets Render set everything up automatically.
+# On Render, choose "New +" -> "Blueprint" and point it at your repo;
+# it reads this file so you don't have to fill in build/start commands.
+services:
+  - type: web
+    name: random-video-chat
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
