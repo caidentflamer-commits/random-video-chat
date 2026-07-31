@@ -83,6 +83,20 @@ function intersect(a, b) {
   return a.filter((x) => setB.has(x));
 }
 
+// A country/language preference: empty, 'any' or 'anywhere' all mean "no filter".
+function normPref(v) {
+  return typeof v === 'string' ? v.trim().toLowerCase() : '';
+}
+function isAnyPref(v) { return !v || v === 'any' || v === 'anywhere'; }
+
+// Two users may be matched only if their language AND country prefs are
+// compatible: either side is "any/anywhere", or they picked the same value.
+function compatible(a, b) {
+  const langOK = isAnyPref(a.language) || isAnyPref(b.language) || a.language === b.language;
+  const countryOK = isAnyPref(a.country) || isAnyPref(b.country) || a.country === b.country;
+  return langOK && countryOK;
+}
+
 function pair(a, b) {
   partners.set(a, b);
   partners.set(b, a);
@@ -118,11 +132,11 @@ const FALLBACK_MS = 6000;
 function enqueue(socket) {
   waiting = waiting.filter((s) => s !== socket);
 
-  // 1) Best shared-interest match among people already waiting.
+  // 1) Best shared-interest match among compatible people already waiting.
   let bestIdx = -1, bestScore = 0;   // start at 0: only a real overlap counts
   for (let i = 0; i < waiting.length; i++) {
     const s = waiting[i];
-    if (s.readyState !== s.OPEN) continue;
+    if (s.readyState !== s.OPEN || !compatible(socket, s)) continue;
     const score = intersect(socket.interests, s.interests).length;
     if (score > bestScore) { bestScore = score; bestIdx = i; }
   }
@@ -132,9 +146,9 @@ function enqueue(socket) {
   }
 
   // 2) No shared interest found. If THIS user listed no interests, they don't
-  //    care who they meet — match them with whoever has waited longest.
+  //    care who they meet — match them with the longest-waiting compatible user.
   if (socket.interests.length === 0) {
-    const idx = waiting.findIndex((s) => s.readyState === s.OPEN);
+    const idx = waiting.findIndex((s) => s.readyState === s.OPEN && compatible(socket, s));
     if (idx !== -1) {
       const partner = waiting.splice(idx, 1)[0];
       return pair(socket, partner);
@@ -153,11 +167,16 @@ function enqueue(socket) {
 setInterval(() => {
   const now = Date.now();
   const stale = waiting.filter((s) => s.readyState === s.OPEN && now - (s.waitingSince || now) >= FALLBACK_MS);
-  while (stale.length >= 2) {
-    const a = stale.shift();
-    const b = stale.shift();
-    waiting = waiting.filter((s) => s !== a && s !== b);
-    pair(a, b);
+  for (let i = 0; i < stale.length; i++) {
+    const a = stale[i];
+    if (!waiting.includes(a)) continue;               // already paired this pass
+    for (let j = i + 1; j < stale.length; j++) {
+      const b = stale[j];
+      if (!waiting.includes(b) || !compatible(a, b)) continue;
+      waiting = waiting.filter((s) => s !== a && s !== b);
+      pair(a, b);
+      break;
+    }
   }
 }, 2000);
 
@@ -178,6 +197,8 @@ wss.on('connection', (socket, req) => {
   socket.id = nextId++;
   socket.ip = getClientIp(req);
   socket.interests = [];
+  socket.language = '';   // '' = any language
+  socket.country = '';    // '' = anywhere
 
   // Refuse banned users immediately.
   if (bannedIps.has(socket.ip)) {
@@ -195,6 +216,8 @@ wss.on('connection', (socket, req) => {
     switch (msg.type) {
       case 'ready':
         socket.interests = normalizeInterests(msg.interests);
+        socket.language = normPref(msg.language);
+        socket.country = normPref(msg.country);
         unpair(socket, true);
         enqueue(socket);
         break;
@@ -216,6 +239,8 @@ wss.on('connection', (socket, req) => {
 
       case 'next':
         if (msg.interests !== undefined) socket.interests = normalizeInterests(msg.interests);
+        if (msg.language !== undefined) socket.language = normPref(msg.language);
+        if (msg.country !== undefined) socket.country = normPref(msg.country);
         unpair(socket, true);
         enqueue(socket);
         break;

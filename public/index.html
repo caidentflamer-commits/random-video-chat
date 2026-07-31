@@ -276,6 +276,17 @@
   </div>
 </div>
 
+<!-- Filters modal (region / language) -->
+<div class="c-modal is-hidden" id="filters-modal" role="dialog" aria-modal="true" aria-labelledby="filtersTitle">
+  <div class="c-modal__backdrop" id="filtersBackdrop"></div>
+  <div class="c-modal__sheet" style="width:min(520px,100%)">
+    <div><h3 class="c-h3" id="filtersTitle" style="font-size:var(--fs-md)">Who you meet</h3><p class="c-body c-muted" style="font-size:var(--fs-sm)">Pick a region and language. “Anywhere” / “Any language” matches everyone; a specific choice pairs you only with people who picked the same.</p></div>
+    <div class="c-field"><label>Region</label><div id="countryOptions" style="display:flex;flex-wrap:wrap;gap:8px;max-height:150px;overflow:auto"></div></div>
+    <div class="c-field"><label>Language</label><div id="languageOptions" style="display:flex;flex-wrap:wrap;gap:8px;max-height:150px;overflow:auto"></div></div>
+    <div class="c-modal__actions"><button class="c-btn" id="filtersDone">Done</button></div>
+  </div>
+</div>
+
 <!-- Toast -->
 <div class="c-toast c-toast--success is-hidden" id="toast"><span class="c-toast__dot"></span> <span id="toastText"></span></div>
 
@@ -317,6 +328,8 @@ const els = {
   reportNote: $('reportNote'), reportCancel: $('reportCancel'), reportSubmit: $('reportSubmit'), reportBackdrop: $('reportBackdrop'),
   interestsModal: $('interests-modal'), tagSearch: $('tag-search'), tags: $('tags'),
   interestsDone: $('interestsDone'), interestsBackdrop: $('interestsBackdrop'),
+  filtersModal: $('filters-modal'), filtersBackdrop: $('filtersBackdrop'), filtersDone: $('filtersDone'),
+  countryOptions: $('countryOptions'), languageOptions: $('languageOptions'),
   toast: $('toast'), toastText: $('toastText'),
   banned: $('banned-screen'), sampler: $('sampler'), settingsBtn: $('settingsBtn'),
 };
@@ -397,6 +410,53 @@ function toast(text) {
   toastTimer = setTimeout(() => show(els.toast, false), 3500);
 }
 
+// --- Country / language filters -------------------------------------------
+const COUNTRIES = [
+  { v: 'anywhere', l: 'Anywhere' }, { v: 'us', l: 'United States' }, { v: 'gb', l: 'United Kingdom' },
+  { v: 'ca', l: 'Canada' }, { v: 'au', l: 'Australia' }, { v: 'in', l: 'India' },
+  { v: 'ph', l: 'Philippines' }, { v: 'de', l: 'Germany' }, { v: 'fr', l: 'France' },
+  { v: 'es', l: 'Spain' }, { v: 'it', l: 'Italy' }, { v: 'br', l: 'Brazil' },
+  { v: 'mx', l: 'Mexico' }, { v: 'ng', l: 'Nigeria' }, { v: 'jp', l: 'Japan' },
+  { v: 'kr', l: 'South Korea' }, { v: 'ru', l: 'Russia' }, { v: 'tr', l: 'Turkey' },
+  { v: 'id', l: 'Indonesia' }, { v: 'other', l: 'Other' },
+];
+const LANGUAGES = [
+  { v: 'any', l: 'Any language' }, { v: 'en', l: 'English' }, { v: 'es', l: 'Spanish' },
+  { v: 'pt', l: 'Portuguese' }, { v: 'fr', l: 'French' }, { v: 'de', l: 'German' },
+  { v: 'it', l: 'Italian' }, { v: 'hi', l: 'Hindi' }, { v: 'ar', l: 'Arabic' },
+  { v: 'ru', l: 'Russian' }, { v: 'ja', l: 'Japanese' }, { v: 'ko', l: 'Korean' },
+  { v: 'zh', l: 'Chinese' }, { v: 'tr', l: 'Turkish' }, { v: 'id', l: 'Indonesian' },
+];
+let prefCountry = 'anywhere', prefLanguage = 'any';
+const countryLabel = (v) => (COUNTRIES.find((c) => c.v === v) || {}).l || 'Anywhere';
+const languageLabel = (v) => (LANGUAGES.find((c) => c.v === v) || {}).l || 'Any language';
+// interests + prefs sent with every ready/next so matchmaking can filter.
+function matchPayload() { return { interests: getInterests(), country: prefCountry, language: prefLanguage }; }
+
+function renderFilterOptions() {
+  const build = (container, list, current, set) => {
+    container.innerHTML = '';
+    list.forEach((o) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'c-chip' + (o.v === current() ? ' is-selected' : '');
+      b.textContent = o.l;
+      b.addEventListener('click', () => { set(o.v); renderFilterOptions(); });
+      container.appendChild(b);
+    });
+  };
+  build(els.countryOptions, COUNTRIES, () => prefCountry, (v) => (prefCountry = v));
+  build(els.languageOptions, LANGUAGES, () => prefLanguage, (v) => (prefLanguage = v));
+}
+function openFilters() { renderFilterOptions(); show(els.filtersModal, true); }
+function closeFilters() {
+  show(els.filtersModal, false);
+  renderIdleInterests();                         // refresh the chip labels
+  if (state === 'searching' && ws && ws.readyState === ws.OPEN) {
+    ws.send(JSON.stringify({ type: 'ready', ...matchPayload() }));   // re-queue with new prefs
+  }
+}
+
 // --- Interests ------------------------------------------------------------
 const INTEREST_OPTIONS = [
   'Gaming','Video Games','Esports','Minecraft','Fortnite','Roblox','League of Legends','Valorant','Call of Duty','Among Us',
@@ -447,13 +507,17 @@ function renderIdleInterests() {
   add.type = 'button'; add.className = 'c-chip'; add.textContent = '+ interests';
   add.addEventListener('click', openInterests);
   els.idleInterests.appendChild(add);
-  // Cosmetic filters (not wired to matching yet).
-  ['Anywhere ▾', 'English ▾'].forEach((t) => {
-    const c = document.createElement('button');
-    c.type = 'button'; c.className = 'c-chip'; c.textContent = t;
-    c.title = 'Filter coming soon';
-    els.idleInterests.appendChild(c);
-  });
+  // Region + language filters (wired to matchmaking via the filters modal).
+  const cc = document.createElement('button');
+  cc.type = 'button'; cc.className = 'c-chip';
+  cc.textContent = (prefCountry === 'anywhere' ? 'Anywhere' : countryLabel(prefCountry)) + ' ▾';
+  cc.addEventListener('click', openFilters);
+  els.idleInterests.appendChild(cc);
+  const lc = document.createElement('button');
+  lc.type = 'button'; lc.className = 'c-chip';
+  lc.textContent = (prefLanguage === 'any' ? 'Any language' : languageLabel(prefLanguage)) + ' ▾';
+  lc.addEventListener('click', openFilters);
+  els.idleInterests.appendChild(lc);
 }
 renderIdleInterests();
 
@@ -461,7 +525,7 @@ function openInterests() { show(els.interestsModal, true); els.tagSearch.focus()
 function closeInterests() {
   show(els.interestsModal, false);
   if (state === 'searching' && ws && ws.readyState === ws.OPEN) {
-    ws.send(JSON.stringify({ type: 'ready', interests: getInterests() }));  // re-queue with new interests
+    ws.send(JSON.stringify({ type: 'ready', ...matchPayload() }));  // re-queue with new interests
   }
 }
 els.tagSearch.addEventListener('input', () => {
@@ -472,6 +536,8 @@ els.interestsDone.addEventListener('click', closeInterests);
 els.interestsBackdrop.addEventListener('click', closeInterests);
 els.editInterests.addEventListener('click', openInterests);
 els.settingsBtn.addEventListener('click', openInterests);   // gear opens preferences for now
+els.filtersDone.addEventListener('click', closeFilters);
+els.filtersBackdrop.addEventListener('click', closeFilters);
 
 // --- Chat -----------------------------------------------------------------
 function addChat(text, kind, who) {
@@ -573,7 +639,7 @@ function handleSelfViolation() {
 function connectToServer() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   ws = new WebSocket(`${proto}://${location.host}`);
-  ws.onopen = () => ws.send(JSON.stringify({ type: 'ready', interests: getInterests() }));
+  ws.onopen = () => ws.send(JSON.stringify({ type: 'ready', ...matchPayload() }));
   ws.onmessage = async (event) => {
     const msg = JSON.parse(event.data);
     switch (msg.type) {
@@ -606,7 +672,7 @@ function connectToServer() {
         setState('searching');
         toast('Stranger left the chat — finding someone new.');
         startReportLastWindow(peerName);
-        ws.send(JSON.stringify({ type: 'ready', interests: getInterests() }));
+        ws.send(JSON.stringify({ type: 'ready', ...matchPayload() }));
         break;
       case 'report-ack':
         toast('Reported. You won’t be matched with them again.');
@@ -695,7 +761,7 @@ els.skipBtn.addEventListener('click', () => {
   teardownCall(); clearChat();
   setSearchReason('searching');
   setState('searching');
-  ws.send(JSON.stringify({ type: 'next', interests: getInterests() }));
+  ws.send(JSON.stringify({ type: 'next', ...matchPayload() }));
   startReportLastWindow(left);
 });
 els.stopBtn.addEventListener('click', () => {
