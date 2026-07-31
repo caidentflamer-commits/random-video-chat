@@ -178,8 +178,8 @@
       <!-- searching -->
       <div class="fill c-connecting is-hidden" id="searchPanel">
         <div class="c-spinner c-spinner--lg"></div>
-        <h2 class="c-h2" style="font-size:var(--fs-lg)">Looking for someone…</h2>
-        <p class="c-mono c-muted" style="font-size:var(--fs-xs)">usually under 8s</p>
+        <h2 class="c-h2" style="font-size:var(--fs-lg)" id="searchTitle">Looking for someone…</h2>
+        <p class="c-mono c-muted" style="font-size:var(--fs-xs)" id="searchNote">usually under 8s</p>
       </div>
       <!-- connected: stranger -->
       <div class="fill is-hidden" id="remoteWrap">
@@ -302,6 +302,7 @@ const $ = (id) => document.getElementById(id);
 const els = {
   connBadge: $('connBadge'), connTime: $('connTime'), shield: $('shield'),
   leftTile: $('leftTile'), idlePanel: $('idlePanel'), searchPanel: $('searchPanel'),
+  searchTitle: $('searchTitle'), searchNote: $('searchNote'),
   remoteWrap: $('remoteWrap'), remote: $('remote'), remotePlaceholder: $('remotePlaceholder'),
   remoteName: $('remoteName'), reportFlag: $('reportFlag'),
   local: $('local'), localPlaceholder: $('localPlaceholder'), localName: $('localName'), warnOverlay: $('warn-overlay'),
@@ -361,6 +362,18 @@ function startReportLastWindow(name) {
   clearTimeout(reportLastTimer);
   show(els.reportLast, true);
   reportLastTimer = setTimeout(() => show(els.reportLast, false), REPORT_LAST_MS);
+}
+
+// The searching panel's copy changes when the *other* person left (vs. you
+// choosing to search / skip), so it's clear what just happened.
+function setSearchReason(reason) {
+  if (reason === 'left') {
+    els.searchTitle.textContent = 'Your partner left';
+    els.searchNote.textContent = 'Finding someone new…';
+  } else {
+    els.searchTitle.textContent = 'Looking for someone…';
+    els.searchNote.textContent = 'usually under 8s';
+  }
 }
 
 // --- Shield ---------------------------------------------------------------
@@ -586,9 +599,12 @@ function connectToServer() {
         addChat(msg.text, 'them', peerName);
         break;
       case 'partner-left':
-        addChat('Stranger disconnected.', 'sys');
+        // The stranger left first (you didn't skip). Make that explicit in the
+        // searching panel and via a toast, and keep "Report last" available.
         teardownCall();
+        setSearchReason('left');
         setState('searching');
+        toast('Stranger left the chat — finding someone new.');
         startReportLastWindow(peerName);
         ws.send(JSON.stringify({ type: 'ready', interests: getInterests() }));
         break;
@@ -666,6 +682,7 @@ function stopTimer() { if (callTimer) { clearInterval(callTimer); callTimer = nu
 // --- Buttons --------------------------------------------------------------
 els.startBtn.addEventListener('click', async () => {
   if (!localStream && !(await initLocalMedia())) return;
+  setSearchReason('searching');
   setState('searching');
   connectToServer();
 });
@@ -676,6 +693,7 @@ els.cancelBtn.addEventListener('click', () => {
 els.skipBtn.addEventListener('click', () => {
   const left = peerName;
   teardownCall(); clearChat();
+  setSearchReason('searching');
   setState('searching');
   ws.send(JSON.stringify({ type: 'next', interests: getInterests() }));
   startReportLastWindow(left);
