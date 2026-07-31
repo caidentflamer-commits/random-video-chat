@@ -311,7 +311,15 @@
 <canvas id="sampler" width="224" height="224" style="display:none"></canvas>
 
 <script>
-const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
+// ICE servers come from the server's /ice endpoint (STUN + optional TURN with
+// fresh credentials). Falls back to STUN-only if the fetch fails.
+let iceConfig = [{ urls: 'stun:stun.l.google.com:19302' }];
+async function fetchIce() {
+  try {
+    const r = await fetch('/ice', { cache: 'no-store' });
+    if (r.ok) { const j = await r.json(); if (j && Array.isArray(j.iceServers) && j.iceServers.length) iceConfig = j.iceServers; }
+  } catch {}
+}
 const FLAG_SVG = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--danger)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 21V4"/><path d="M5 5h11l-1.6 3.6L16 12H5z" fill="var(--danger)" stroke="none"/><path d="M5 4h11l-1.6 4L16 12H5z"/></svg>';
 
 // --- Moderation tuning ----------------------------------------------------
@@ -582,7 +590,7 @@ function makeTile(peerId, entry) {
 function addPeer(peerId, initiator, friend) {
   if (peers.has(peerId)) return;
   let pc;
-  try { pc = new RTCPeerConnection({ iceServers: ICE_SERVERS }); }
+  try { pc = new RTCPeerConnection({ iceServers: iceConfig }); }
   catch (e) { console.warn('Peer connection failed:', e); return; }
   const entry = { pc, friend: !!friend, name: friend ? 'Friend' : 'Stranger' };
   peers.set(peerId, entry);
@@ -628,7 +636,8 @@ function startTimer() {
 function stopTimer() { if (callTimer) { clearInterval(callTimer); callTimer = null; } }
 
 // --- Server connection ----------------------------------------------------
-function ensureSocket() {
+async function ensureSocket() {
+  await fetchIce();   // refresh ICE/TURN credentials before forming any peers
   return new Promise((resolve) => {
     if (ws && ws.readyState === ws.OPEN) return resolve();
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -721,6 +730,7 @@ els.reportSubmit.addEventListener('click', () => {
 
 // --- Boot -----------------------------------------------------------------
 phase = 'idle'; render(); updateShield();
+fetchIce();   // warm the ICE/TURN config; refreshed again before each session
 // Camera is acquired on the first user gesture (tap the preview or a button).
 </script>
 </body>

@@ -23,10 +23,33 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
 
 const PORT = process.env.PORT || 3000;
 const PUBLIC_DIR = path.join(__dirname, 'public');
+
+// ---- ICE / TURN config (from env, never committed) ------------------------
+// Direct P2P (STUN) works for most 1-on-1s; a TURN relay is needed when a peer
+// sits behind a strict/symmetric NAT (common on mobile data & some Wi-Fi) and
+// matters more for 3–4-person mesh rooms. Configure via Render env vars — see
+// TURN.md. Two supported schemes:
+//   • HMAC (coturn `use-auth-secret` / TURN REST): TURN_URLS + TURN_SECRET
+//   • Static credentials (some managed providers): TURN_URLS + TURN_USERNAME + TURN_CREDENTIAL
+// With nothing set, we fall back to STUN-only (today's behavior).
+function buildIceServers() {
+  const servers = [{ urls: 'stun:stun.l.google.com:19302' }];
+  const urls = (process.env.TURN_URLS || '').split(',').map((s) => s.trim()).filter(Boolean);
+  if (urls.length && process.env.TURN_SECRET) {
+    const ttl = parseInt(process.env.TURN_TTL || '43200', 10); // seconds (default 12h)
+    const username = `${Math.floor(Date.now() / 1000) + ttl}:openline`;
+    const credential = crypto.createHmac('sha1', process.env.TURN_SECRET).update(username).digest('base64');
+    servers.push({ urls, username, credential });
+  } else if (urls.length && process.env.TURN_USERNAME && process.env.TURN_CREDENTIAL) {
+    servers.push({ urls, username: process.env.TURN_USERNAME, credential: process.env.TURN_CREDENTIAL });
+  }
+  return servers;
+}
 
 // ---- 1. Serve the frontend files -----------------------------------------
 
@@ -35,6 +58,12 @@ const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css
 const server = http.createServer((req, res) => {
   let urlPath = req.url.split('?')[0];
   if (urlPath === '/') urlPath = '/index.html';
+
+  // ICE/TURN config for the client (fresh HMAC credentials each request).
+  if (urlPath === '/ice') {
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    return res.end(JSON.stringify({ iceServers: buildIceServers() }));
+  }
 
   const filePath = path.join(PUBLIC_DIR, path.normalize(urlPath));
   if (!filePath.startsWith(PUBLIC_DIR)) {
