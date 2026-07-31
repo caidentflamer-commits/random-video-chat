@@ -63,6 +63,14 @@
 
   .controls { padding: 14px; display: flex; gap: 12px; justify-content: center; align-items: center; border-top: 1px solid #262a36; flex-wrap: wrap; }
   .interests-area { border-top: 1px solid #262a36; padding: 10px 14px; display: flex; flex-direction: column; gap: 8px; }
+  .interests-header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .interests-toggle {
+    background: var(--panel); border: 1px solid #2c3140; color: var(--text);
+    border-radius: 999px; padding: 7px 14px; font-size: 13px; font-weight: 600; cursor: pointer;
+  }
+  .interests-toggle:hover { border-color: #3b4256; }
+  .interests-panel { display: flex; flex-direction: column; gap: 8px; }
+  .interests-panel[hidden] { display: none; }
   .selected-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
   .tags-label { color: var(--muted); font-size: 13px; margin-right: 4px; }
   .muted-note { color: var(--muted); font-size: 13px; }
@@ -138,12 +146,14 @@
   </div>
 
   <div class="interests-area">
-    <div class="selected-row" id="selected-row">
-      <span class="tags-label">Interests:</span>
-      <span class="muted-note" id="selected-empty">none picked (optional)</span>
+    <div class="interests-header">
+      <button class="interests-toggle" id="interests-toggle" type="button">＋ Interests (optional)</button>
+      <span class="selected-row" id="selected-row"></span>
     </div>
-    <input class="tag-search" id="tag-search" type="text" placeholder="Search interests…" autocomplete="off" />
-    <div class="tags" id="tags"></div>
+    <div class="interests-panel" id="interests-panel" hidden>
+      <input class="tag-search" id="tag-search" type="text" placeholder="Search interests…" autocomplete="off" />
+      <div class="tags" id="tags"></div>
+    </div>
   </div>
 
   <div class="controls">
@@ -176,7 +186,8 @@ const statusEl = $('status'), connDot = $('conn-dot'), safetyBadge = $('safety')
 const localVideo = $('local'), remoteVideo = $('remote');
 const localPlaceholder = $('local-placeholder'), remotePlaceholder = $('remote-placeholder');
 const warnOverlay = $('warn-overlay'), bannedScreen = $('banned-screen'), sampler = $('sampler');
-const tagsEl = $('tags'), tagSearch = $('tag-search'), selectedRow = $('selected-row'), selectedEmpty = $('selected-empty');
+const tagsEl = $('tags'), tagSearch = $('tag-search'), selectedRow = $('selected-row');
+const interestsToggle = $('interests-toggle'), interestsPanel = $('interests-panel');
 const chatLog = $('chat-log'), chatInput = $('chat-input'), chatSend = $('chat-send');
 
 let localStream = null, ws = null, pc = null, isInitiator = false;
@@ -237,7 +248,6 @@ function toggleInterest(key) {
 // the search box has filtered them out of the list below.
 function renderSelected() {
   [...selectedRow.querySelectorAll('.pill')].forEach((p) => p.remove());
-  selectedEmpty.style.display = selected.size ? 'none' : 'inline';
   selected.forEach((key) => {
     const pill = document.createElement('button');
     pill.type = 'button';
@@ -247,6 +257,19 @@ function renderSelected() {
     selectedRow.appendChild(pill);
   });
 }
+
+// Show/hide the interest picker so the tag list isn't always taking up space.
+interestsToggle.addEventListener('click', () => {
+  const opening = interestsPanel.hasAttribute('hidden');
+  if (opening) {
+    interestsPanel.removeAttribute('hidden');
+    interestsToggle.textContent = '－ Interests';
+    tagSearch.focus();
+  } else {
+    interestsPanel.setAttribute('hidden', '');
+    interestsToggle.textContent = '＋ Interests (optional)';
+  }
+});
 
 // Filter the tag list as the user types in the search box.
 tagSearch.addEventListener('input', () => {
