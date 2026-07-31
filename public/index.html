@@ -4,116 +4,80 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Random Video Chat</title>
+
+<!-- In-browser NSFW detection (free, no API key). tfjs is the ML engine;
+     nsfwjs is the model that scores a frame for explicit content.
+     These load from a CDN. If they fail to load, the app still works —
+     moderation just shows as "off" (see initModeration below). -->
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.21.0/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/nsfwjs@2.4.2/dist/nsfwjs.min.js"></script>
+
 <style>
   :root {
-    --bg: #0f1117;
-    --panel: #1a1d27;
-    --accent: #4f7cff;
-    --accent-hover: #3f6bef;
-    --danger: #ff5470;
-    --text: #e7e9ee;
-    --muted: #8a90a2;
+    --bg: #0f1117; --panel: #1a1d27; --accent: #4f7cff; --accent-hover: #3f6bef;
+    --danger: #ff5470; --warn: #ffb020; --ok: #35d07f; --text: #e7e9ee; --muted: #8a90a2;
   }
   * { box-sizing: border-box; }
   body {
-    margin: 0;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    background: var(--bg);
-    color: var(--text);
-    height: 100vh;
-    display: flex;
-    flex-direction: column;
+    margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column;
   }
   header {
-    padding: 14px 20px;
-    font-weight: 600;
-    font-size: 18px;
-    border-bottom: 1px solid #262a36;
-    display: flex;
-    align-items: center;
-    gap: 10px;
+    padding: 14px 20px; font-weight: 600; font-size: 18px; border-bottom: 1px solid #262a36;
+    display: flex; align-items: center; gap: 10px;
   }
-  header .dot {
-    width: 10px; height: 10px; border-radius: 50%;
-    background: var(--muted);
+  header .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); }
+  header .dot.live { background: var(--ok); }
+  header .spacer { flex: 1; }
+  .safety {
+    font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 999px;
+    background: #262a36; color: var(--muted); display: flex; align-items: center; gap: 6px;
   }
-  header .dot.live { background: #35d07f; }
-  .videos {
-    flex: 1;
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 12px;
-    padding: 12px;
-    min-height: 0;
-  }
+  .safety.on { background: rgba(53,208,127,0.15); color: var(--ok); }
+  .safety.off { background: rgba(255,84,112,0.12); color: var(--danger); }
+  .safety.loading { background: rgba(255,176,32,0.12); color: var(--warn); }
+
+  .videos { flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 12px; min-height: 0; }
   .video-wrap {
-    position: relative;
-    background: var(--panel);
-    border-radius: 14px;
-    overflow: hidden;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    position: relative; background: var(--panel); border-radius: 14px; overflow: hidden;
+    display: flex; align-items: center; justify-content: center;
   }
-  video {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-    background: #000;
+  video { width: 100%; height: 100%; object-fit: cover; background: #000; }
+  .label { position: absolute; left: 12px; bottom: 12px; background: rgba(0,0,0,0.55); padding: 4px 10px; border-radius: 8px; font-size: 13px; }
+  .placeholder { position: absolute; color: var(--muted); font-size: 15px; text-align: center; padding: 20px; }
+
+  /* Warning overlay shown on your own video if your camera trips the check. */
+  .warn-overlay {
+    position: absolute; inset: 0; background: rgba(255,84,112,0.92); color: #fff;
+    display: none; align-items: center; justify-content: center; text-align: center;
+    padding: 24px; font-size: 15px; font-weight: 600; z-index: 5;
   }
-  .label {
-    position: absolute;
-    left: 12px; bottom: 12px;
-    background: rgba(0,0,0,0.55);
-    padding: 4px 10px;
-    border-radius: 8px;
-    font-size: 13px;
-  }
-  .placeholder {
-    position: absolute;
-    color: var(--muted);
-    font-size: 15px;
-    text-align: center;
-    padding: 20px;
-  }
-  .controls {
-    padding: 14px;
-    display: flex;
-    gap: 12px;
-    justify-content: center;
-    align-items: center;
-    border-top: 1px solid #262a36;
-  }
-  button {
-    border: none;
-    border-radius: 10px;
-    padding: 12px 26px;
-    font-size: 15px;
-    font-weight: 600;
-    cursor: pointer;
-    color: #fff;
-    transition: background 0.15s;
-  }
-  .btn-start { background: var(--accent); }
-  .btn-start:hover { background: var(--accent-hover); }
-  .btn-next { background: var(--danger); }
-  .btn-next:hover { filter: brightness(1.05); }
+
+  .controls { padding: 14px; display: flex; gap: 12px; justify-content: center; align-items: center; border-top: 1px solid #262a36; flex-wrap: wrap; }
+  button { border: none; border-radius: 10px; padding: 12px 24px; font-size: 15px; font-weight: 600; cursor: pointer; color: #fff; transition: background 0.15s, filter 0.15s; }
+  .btn-start { background: var(--accent); } .btn-start:hover { background: var(--accent-hover); }
+  .btn-next { background: var(--danger); } .btn-next:hover { filter: brightness(1.05); }
+  .btn-report { background: #6b7280; } .btn-report:hover { filter: brightness(1.1); }
   button:disabled { opacity: 0.5; cursor: default; }
-  .status {
-    color: var(--muted);
-    font-size: 14px;
-    min-width: 160px;
-    text-align: center;
+  .status { color: var(--muted); font-size: 14px; min-width: 160px; text-align: center; }
+
+  /* Full-screen banned message. */
+  .banned-screen {
+    position: fixed; inset: 0; background: #0b0d13; color: #fff; z-index: 50;
+    display: none; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 30px;
   }
-  @media (max-width: 700px) {
-    .videos { grid-template-columns: 1fr; }
-  }
+  .banned-screen h1 { color: var(--danger); margin-bottom: 10px; }
+  .banned-screen p { color: var(--muted); max-width: 420px; }
+
+  @media (max-width: 700px) { .videos { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
   <header>
     <span class="dot" id="conn-dot"></span>
     Random Video Chat
+    <span class="spacer"></span>
+    <span class="safety" id="safety">Safety check: off</span>
   </header>
 
   <div class="videos">
@@ -125,6 +89,7 @@
     <div class="video-wrap">
       <video id="local" autoplay playsinline muted></video>
       <div class="placeholder" id="local-placeholder">Your camera is off</div>
+      <div class="warn-overlay" id="warn-overlay">Inappropriate content detected on your camera. You were disconnected.</div>
       <div class="label">You</div>
     </div>
   </div>
@@ -132,43 +97,65 @@
   <div class="controls">
     <button class="btn-start" id="startBtn">Start</button>
     <button class="btn-next" id="nextBtn" disabled>Next</button>
+    <button class="btn-report" id="reportBtn" disabled>Report</button>
     <div class="status" id="status">Click Start to turn on your camera.</div>
   </div>
 
-<script>
-/*
- * Frontend logic. Three moving parts:
- *   1. getUserMedia  -> turn on the local camera/mic.
- *   2. WebSocket     -> talk to our matchmaking server.
- *   3. RTCPeerConnection -> the actual peer-to-peer video link.
- */
+  <div class="banned-screen" id="banned-screen">
+    <h1>You've been banned</h1>
+    <p>You were reported for inappropriate behavior and can no longer use this service.</p>
+  </div>
 
-// Free public STUN server (helps browsers find each other behind routers).
-// For connections that STUN can't fix, you'd add a TURN server here later.
+<!-- hidden canvas used to grab a frame from your camera for the safety check -->
+<canvas id="sampler" width="224" height="224" style="display:none"></canvas>
+
+<script>
 const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
+
+// --- Moderation tuning (easy to adjust) -----------------------------------
+const SAMPLE_MS = 4000;      // how often to check your own camera
+const EXPLICIT_THRESHOLD = 0.60;  // Porn + Hentai probability that counts as a trip
+const SEXY_THRESHOLD = 0.85;      // softer "Sexy" probability that counts as a trip
+const TRIPS_BEFORE_ACTION = 2;    // consecutive trips before we act (avoids one-off false positives)
+const MAX_STRIKES = 3;            // after this many violations we stop the user
 
 const startBtn = document.getElementById('startBtn');
 const nextBtn = document.getElementById('nextBtn');
+const reportBtn = document.getElementById('reportBtn');
 const statusEl = document.getElementById('status');
 const connDot = document.getElementById('conn-dot');
+const safetyBadge = document.getElementById('safety');
 const localVideo = document.getElementById('local');
 const remoteVideo = document.getElementById('remote');
 const localPlaceholder = document.getElementById('local-placeholder');
 const remotePlaceholder = document.getElementById('remote-placeholder');
+const warnOverlay = document.getElementById('warn-overlay');
+const bannedScreen = document.getElementById('banned-screen');
+const sampler = document.getElementById('sampler');
 
-let localStream = null;
-let ws = null;
-let pc = null;          // the current RTCPeerConnection
-let isInitiator = false;
+let localStream = null, ws = null, pc = null, isInitiator = false;
+let inCall = false;
+let nsfwModel = null;
+let moderationState = 'off';   // 'off' | 'loading' | 'on'
+let tripCount = 0, strikes = 0;
+let moderationTimer = null;
 
-function setStatus(text) { statusEl.textContent = text; }
+function setStatus(t) { statusEl.textContent = t; }
 
-// --- Step 1: camera + connect to the server -------------------------------
+function updateSafetyBadge() {
+  safetyBadge.className = 'safety ' + moderationState;
+  safetyBadge.textContent =
+    moderationState === 'on' ? 'Safety check: on'
+    : moderationState === 'loading' ? 'Safety check: loading…'
+    : 'Safety check: off';
+}
+
+// --- Start: camera, safety model, and server connection -------------------
 
 startBtn.onclick = async () => {
   try {
     localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-  } catch (err) {
+  } catch {
     setStatus('Could not access camera/mic. Please allow permission.');
     return;
   }
@@ -177,8 +164,73 @@ startBtn.onclick = async () => {
   startBtn.disabled = true;
   nextBtn.disabled = false;
 
+  initModeration();     // loads in the background; never blocks the app
   connectToServer();
 };
+
+// Load the NSFW model. If anything fails, moderation just stays "off".
+async function initModeration() {
+  moderationState = 'loading'; updateSafetyBadge();
+  try {
+    if (typeof nsfwjs === 'undefined' || typeof tf === 'undefined') {
+      throw new Error('Safety libraries did not load (CDN blocked?).');
+    }
+    nsfwModel = await nsfwjs.load();   // default model
+    moderationState = 'on';
+    startModerationLoop();
+  } catch (err) {
+    console.warn('Moderation disabled:', err);
+    nsfwModel = null;
+    moderationState = 'off';
+  }
+  updateSafetyBadge();
+}
+
+function startModerationLoop() {
+  if (moderationTimer) clearInterval(moderationTimer);
+  moderationTimer = setInterval(checkOwnCamera, SAMPLE_MS);
+}
+
+async function checkOwnCamera() {
+  if (!nsfwModel || !inCall || !localStream) return;
+  try {
+    const ctx = sampler.getContext('2d');
+    ctx.drawImage(localVideo, 0, 0, sampler.width, sampler.height);
+    const preds = await nsfwModel.classify(sampler);
+    const s = {};
+    preds.forEach((p) => { s[p.className] = p.probability; });
+    const explicit = (s['Porn'] || 0) + (s['Hentai'] || 0);
+    const trip = explicit >= EXPLICIT_THRESHOLD || (s['Sexy'] || 0) >= SEXY_THRESHOLD;
+
+    if (trip) {
+      tripCount++;
+      if (tripCount >= TRIPS_BEFORE_ACTION) handleSelfViolation();
+    } else {
+      tripCount = 0;
+    }
+  } catch (err) {
+    // A single failed check shouldn't break anything.
+    console.warn('Safety check error:', err);
+  }
+}
+
+function handleSelfViolation() {
+  tripCount = 0;
+  strikes++;
+  endCall();
+  warnOverlay.style.display = 'flex';
+  setTimeout(() => { warnOverlay.style.display = 'none'; }, 4000);
+
+  if (strikes >= MAX_STRIKES) {
+    setStatus('Too many violations. Please reload to continue.');
+    nextBtn.disabled = true; reportBtn.disabled = true;
+    if (ws) ws.close();
+    return;
+  }
+  setStatus('You were disconnected for inappropriate content. Click Next to continue.');
+}
+
+// --- Server connection ----------------------------------------------------
 
 function connectToServer() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -189,62 +241,63 @@ function connectToServer() {
     setStatus('Looking for a stranger...');
     ws.send(JSON.stringify({ type: 'ready' }));
   };
-
-  ws.onclose = () => {
-    connDot.classList.remove('live');
-    setStatus('Disconnected from server.');
-  };
+  ws.onclose = () => { connDot.classList.remove('live'); };
 
   ws.onmessage = async (event) => {
     const msg = JSON.parse(event.data);
-
     switch (msg.type) {
       case 'waiting':
         setStatus('Waiting for someone to join...');
         break;
-
       case 'matched':
         isInitiator = msg.initiator;
         setStatus('Stranger found! Connecting...');
         await startCall();
         break;
-
       case 'signal':
         await handleSignal(msg.data);
         break;
-
       case 'partner-left':
         setStatus('Stranger left. Finding a new one...');
         endCall();
         ws.send(JSON.stringify({ type: 'ready' }));
         break;
+      case 'report-ack':
+        setStatus('Thanks — that person was reported and removed.');
+        break;
+      case 'banned':
+        showBanned();
+        break;
     }
   };
 }
 
-// --- Step 2: the WebRTC connection ----------------------------------------
+function showBanned() {
+  inCall = false;
+  if (moderationTimer) clearInterval(moderationTimer);
+  if (pc) { pc.close(); pc = null; }
+  if (ws) ws.close();
+  if (localStream) localStream.getTracks().forEach((t) => t.stop());
+  bannedScreen.style.display = 'flex';
+}
+
+// --- WebRTC ---------------------------------------------------------------
 
 async function startCall() {
   pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-
-  // Send our camera/mic to the other side.
   localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
 
-  // Show the other side's video when it arrives.
   pc.ontrack = (event) => {
     remoteVideo.srcObject = event.streams[0];
     remotePlaceholder.style.display = 'none';
+    inCall = true;
+    reportBtn.disabled = false;
     setStatus('Connected! Say hi.');
   };
-
-  // Whenever we discover a network path, send it to the partner.
   pc.onicecandidate = (event) => {
-    if (event.candidate) {
-      ws.send(JSON.stringify({ type: 'signal', data: { candidate: event.candidate } }));
-    }
+    if (event.candidate) ws.send(JSON.stringify({ type: 'signal', data: { candidate: event.candidate } }));
   };
 
-  // The initiator kicks off the handshake with an "offer".
   if (isInitiator) {
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
@@ -254,40 +307,44 @@ async function startCall() {
 
 async function handleSignal(data) {
   if (!pc) return;
-
   if (data.sdp) {
     await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-    // If we got an offer, we answer it.
     if (data.sdp.type === 'offer') {
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
       ws.send(JSON.stringify({ type: 'signal', data: { sdp: pc.localDescription } }));
     }
   } else if (data.candidate) {
-    try {
-      await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
-    } catch (err) {
-      // Ignore candidates that arrive too early; WebRTC will recover.
-    }
+    try { await pc.addIceCandidate(new RTCIceCandidate(data.candidate)); } catch {}
   }
 }
 
 function endCall() {
-  if (pc) {
-    pc.close();
-    pc = null;
-  }
+  inCall = false;
+  reportBtn.disabled = true;
+  if (pc) { pc.close(); pc = null; }
   remoteVideo.srcObject = null;
   remotePlaceholder.style.display = 'block';
 }
 
-// --- Step 3: the Next button ----------------------------------------------
+// --- Buttons --------------------------------------------------------------
 
 nextBtn.onclick = () => {
   setStatus('Finding a new stranger...');
   endCall();
   ws.send(JSON.stringify({ type: 'next' }));
 };
+
+reportBtn.onclick = () => {
+  if (!inCall) return;
+  setStatus('Reporting...');
+  ws.send(JSON.stringify({ type: 'report' }));
+  endCall();
+  // After reporting we automatically look for a new partner.
+  ws.send(JSON.stringify({ type: 'ready' }));
+};
+
+updateSafetyBadge();
 </script>
 </body>
 </html>

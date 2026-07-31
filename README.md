@@ -5,8 +5,27 @@ Two people get matched, see each other's live video, and can hit **Next** to
 skip to someone new.
 
 This is a learning/starting prototype. It has the real core (WebRTC video +
-matchmaking) but **not** the production pieces yet (moderation, TURN server,
-accounts, deployment). See "What's next" at the bottom.
+matchmaking) plus a **basic moderation layer**, but not the heavy production
+pieces yet (a TURN server, accounts, database-backed bans, legal-grade abuse
+detection). See "What's next" at the bottom.
+
+## Moderation (what's built in)
+
+- **Automatic camera check:** every few seconds, each person's browser scans
+  their own camera with a free in-browser AI model (nsfwjs). If it detects
+  explicit content, that person is disconnected with a warning. This runs on
+  each user's own device, so it costs nothing to operate.
+- **Report button:** during a call you can report the other person. That bans
+  them (by IP) and disconnects them; they can't reconnect.
+- **Fail-safe:** if the safety model can't load (e.g. a bad network), the app
+  keeps working and the header shows "Safety check: off" instead of breaking.
+
+You can tune how strict the auto-check is at the top of `public/index.html`
+(the `EXPLICIT_THRESHOLD`, `SEXY_THRESHOLD`, and `TRIPS_BEFORE_ACTION` values).
+
+Important honesty note: this is a *basic* layer meant for testing and small,
+trusted groups. It is **not** enough to safely open to the general public — see
+"What's next."
 
 ---
 
@@ -87,9 +106,13 @@ In rough order of importance:
 2. **Add a TURN server** so people on strict networks can still connect. Right
    now it only uses a free STUN server, which works for most — but not all —
    connections.
-3. **Add moderation.** This is the big one for a public launch: sampling video
-   frames and running them through an image-moderation API, plus reporting and
-   banning. Necessary both legally and to keep the app usable.
+3. **Upgrade moderation for a public launch.** The built-in basic layer (see
+   above) is enough for testing and trusted groups, but a real public launch
+   needs more: bans stored in a database (so they survive restarts), stronger
+   server-side detection, device fingerprinting so bans stick, and — legally
+   required — specialized detection/reporting for illegal content (e.g. CSAM
+   via services like PhotoDNA or Thorn). This tier involves ongoing cost and
+   legal obligations, not just code.
 4. **Add the money features** later: gender/region filters, skip-the-wait, or
    remove-ads as a paid upgrade.
 

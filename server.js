@@ -1,13 +1,15 @@
 /*
- * Random Video Chat — signaling + matchmaking server
- * --------------------------------------------------
- * This single file does two jobs:
- *   1. Serves the frontend (the public/ folder) over plain HTTP.
- *   2. Runs a WebSocket server that pairs up waiting users and relays
- *      the WebRTC "handshake" messages between each matched pair.
+ * Random Video Chat — signaling + matchmaking server (with basic moderation)
+ * -------------------------------------------------------------------------
+ * Jobs:
+ *   1. Serve the frontend (public/ folder) over HTTP.
+ *   2. Pair up waiting users and relay the WebRTC handshake between a pair.
+ *   3. Basic moderation: let a user REPORT their partner, which bans that
+ *      partner (by IP) and disconnects them so they can't reconnect.
  *
- * It never touches the actual video/audio — that flows directly between
- * the two browsers (peer-to-peer). The server only introduces them.
+ * NOTE: bans are kept in memory, so they reset if the server restarts.
+ * That's fine for a small/testing setup. A real launch would store bans in
+ * a database — see README's "what's next".
  */
 
 const http = require('http');
@@ -27,7 +29,6 @@ const MIME = {
 };
 
 const server = http.createServer((req, res) => {
-  // Only allow simple GETs for files inside public/.
   let urlPath = req.url.split('?')[0];
   if (urlPath === '/') urlPath = '/index.html';
 
@@ -48,21 +49,29 @@ const server = http.createServer((req, res) => {
   });
 });
 
-// ---- 2. WebSocket signaling + matchmaking --------------------------------
+// ---- 2. WebSocket signaling + matchmaking + moderation -------------------
 
 const wss = new WebSocketServer({ server });
 
-// Users who are online but not yet paired sit in this queue.
-let waiting = [];
-// Map of socket -> its current partner socket.
-const partners = new Map();
-
+let waiting = [];                 // users online but not yet paired
+const partners = new Map();       // socket -> partner socket
+const bannedIps = new Set();      // IPs that reported partners banned
 let nextId = 1;
+
+// Best-effort client IP. On hosts like Render the real IP is in a header.
+function getClientIp(req) {
+  const fwd = req.headers['x-forwarded-for'];
+  if (fwd) return fwd.split(',')[0].trim();
+  return req.socket.remoteAddress || 'unknown';
+}
+
+function send(socket, obj) {
+  if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(obj));
+}
 
 function pair(a, b) {
   partners.set(a, b);
   partners.set(b, a);
-  // One side is the "initiator" — it will create the WebRTC offer.
   send(a, { type: 'matched', initiator: true });
   send(b, { type: 'matched', initiator: false });
   console.log(`Paired #${a.id} <-> #${b.id}`);
@@ -79,12 +88,8 @@ function unpair(socket, notifyPartner) {
   }
 }
 
-// Add a socket to the waiting queue and try to match it immediately.
 function enqueue(socket) {
-  // Remove any stale copy of this socket first.
   waiting = waiting.filter((s) => s !== socket);
-
-  // Find a waiting partner that is still connected and isn't this socket.
   const partnerIndex = waiting.findIndex((s) => s !== socket && s.readyState === s.OPEN);
   if (partnerIndex !== -1) {
     const partner = waiting.splice(partnerIndex, 1)[0];
@@ -95,43 +100,64 @@ function enqueue(socket) {
   }
 }
 
-function send(socket, obj) {
-  if (socket.readyState === socket.OPEN) {
-    socket.send(JSON.stringify(obj));
-  }
+// Kick a socket off entirely (used when someone is banned).
+function banSocket(socket) {
+  bannedIps.add(socket.ip);
+  console.log(`Banned IP ${socket.ip} (socket #${socket.id})`);
+  send(socket, { type: 'banned' });
+  waiting = waiting.filter((s) => s !== socket);
+  unpair(socket, false);
+  // Give the "banned" message a moment to send, then close the connection.
+  setTimeout(() => {
+    if (socket.readyState === socket.OPEN) socket.close();
+  }, 300);
 }
 
-wss.on('connection', (socket) => {
+wss.on('connection', (socket, req) => {
   socket.id = nextId++;
-  console.log(`Connected #${socket.id}`);
+  socket.ip = getClientIp(req);
+
+  // Refuse banned users immediately.
+  if (bannedIps.has(socket.ip)) {
+    console.log(`Rejected banned IP ${socket.ip}`);
+    send(socket, { type: 'banned' });
+    return socket.close();
+  }
+
+  console.log(`Connected #${socket.id} (${socket.ip})`);
 
   socket.on('message', (raw) => {
     let msg;
-    try {
-      msg = JSON.parse(raw);
-    } catch {
-      return;
-    }
+    try { msg = JSON.parse(raw); } catch { return; }
 
     switch (msg.type) {
-      // Client is ready to be matched with a new stranger.
       case 'ready':
         unpair(socket, true);
         enqueue(socket);
         break;
 
-      // Relay a WebRTC offer/answer/ICE candidate to the current partner.
       case 'signal': {
         const partner = partners.get(socket);
         if (partner) send(partner, { type: 'signal', data: msg.data });
         break;
       }
 
-      // Client hit "Next": drop the current partner and re-queue.
       case 'next':
         unpair(socket, true);
         enqueue(socket);
         break;
+
+      // The current user reports their partner for bad behavior.
+      case 'report': {
+        const partner = partners.get(socket);
+        if (partner) {
+          banSocket(partner);          // ban + disconnect the reported person
+          send(socket, { type: 'report-ack' });
+          unpair(socket, false);
+          enqueue(socket);             // put the reporter back in the queue
+        }
+        break;
+      }
     }
   });
 
