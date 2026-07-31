@@ -92,11 +92,19 @@ function pair(a, b) {
   console.log(`Paired #${a.id} <-> #${b.id}${shared.length ? ' (shared: ' + shared.join(', ') + ')' : ''}`);
 }
 
+// How long after a pair splits either side can still "Report last" the other.
+const REPORT_LAST_GRACE_MS = 30000;
+
 function unpair(socket, notifyPartner) {
   const partner = partners.get(socket);
   if (partner) {
     partners.delete(partner);
     partners.delete(socket);
+    // Remember each other for a short grace window so a post-skip "Report last"
+    // is actionable even though the pair is already torn down.
+    const now = Date.now();
+    socket.lastPartner = { socket: partner, ip: partner.ip, at: now };
+    partner.lastPartner = { socket, ip: socket.ip, at: now };
     if (notifyPartner && partner.readyState === partner.OPEN) {
       send(partner, { type: 'partner-left' });
     }
@@ -212,14 +220,35 @@ wss.on('connection', (socket, req) => {
         enqueue(socket);
         break;
 
+      // Leave the queue entirely (the "Stop" button / "Cancel search"): drop
+      // out of matchmaking and go idle, without re-queueing.
+      case 'stop':
+        waiting = waiting.filter((s) => s !== socket);
+        unpair(socket, true);
+        break;
+
       // The current user reports their partner for bad behavior.
       case 'report': {
         const partner = partners.get(socket);
         if (partner) {
+          console.log(`Report #${socket.id} -> #${partner.id} reason=${msg.reason || 'n/a'} note=${(msg.note || '').slice(0, 200)}`);
           banSocket(partner);          // ban + disconnect the reported person
           send(socket, { type: 'report-ack' });
           unpair(socket, false);
           enqueue(socket);             // put the reporter back in the queue
+        }
+        break;
+      }
+
+      // Report the person you were just matched with, shortly after skipping.
+      case 'report-last': {
+        const lp = socket.lastPartner;
+        if (lp && Date.now() - lp.at <= REPORT_LAST_GRACE_MS) {
+          console.log(`Report-last #${socket.id} -> #${lp.socket && lp.socket.id} reason=${msg.reason || 'n/a'} note=${(msg.note || '').slice(0, 200)}`);
+          if (lp.socket && lp.socket.readyState === lp.socket.OPEN) banSocket(lp.socket);
+          else bannedIps.add(lp.ip);   // they already left — ban by IP
+          send(socket, { type: 'report-ack', last: true });
+          socket.lastPartner = null;
         }
         break;
       }
