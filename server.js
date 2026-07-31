@@ -69,12 +69,27 @@ function send(socket, obj) {
   if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(obj));
 }
 
+// Clean up a user's interest list: lowercase, trimmed, de-duplicated, capped.
+function normalizeInterests(list) {
+  if (!Array.isArray(list)) return [];
+  return [...new Set(
+    list.map((s) => String(s).trim().toLowerCase()).filter(Boolean)
+  )].slice(0, 10);
+}
+
+function intersect(a, b) {
+  if (!a || !b) return [];
+  const setB = new Set(b);
+  return a.filter((x) => setB.has(x));
+}
+
 function pair(a, b) {
   partners.set(a, b);
   partners.set(b, a);
-  send(a, { type: 'matched', initiator: true });
-  send(b, { type: 'matched', initiator: false });
-  console.log(`Paired #${a.id} <-> #${b.id}`);
+  const shared = intersect(a.interests, b.interests);
+  send(a, { type: 'matched', initiator: true, shared });
+  send(b, { type: 'matched', initiator: false, shared });
+  console.log(`Paired #${a.id} <-> #${b.id}${shared.length ? ' (shared: ' + shared.join(', ') + ')' : ''}`);
 }
 
 function unpair(socket, notifyPartner) {
@@ -88,17 +103,55 @@ function unpair(socket, notifyPartner) {
   }
 }
 
+// How long an interest-seeker waits for a shared-interest partner before we
+// fall back to matching them with anyone (so nobody is ever stuck).
+const FALLBACK_MS = 6000;
+
 function enqueue(socket) {
   waiting = waiting.filter((s) => s !== socket);
-  const partnerIndex = waiting.findIndex((s) => s !== socket && s.readyState === s.OPEN);
-  if (partnerIndex !== -1) {
-    const partner = waiting.splice(partnerIndex, 1)[0];
-    pair(socket, partner);
-  } else {
-    waiting.push(socket);
-    send(socket, { type: 'waiting' });
+
+  // 1) Best shared-interest match among people already waiting.
+  let bestIdx = -1, bestScore = 0;   // start at 0: only a real overlap counts
+  for (let i = 0; i < waiting.length; i++) {
+    const s = waiting[i];
+    if (s.readyState !== s.OPEN) continue;
+    const score = intersect(socket.interests, s.interests).length;
+    if (score > bestScore) { bestScore = score; bestIdx = i; }
   }
+  if (bestIdx !== -1) {
+    const partner = waiting.splice(bestIdx, 1)[0];
+    return pair(socket, partner);
+  }
+
+  // 2) No shared interest found. If THIS user listed no interests, they don't
+  //    care who they meet — match them with whoever has waited longest.
+  if (socket.interests.length === 0) {
+    const idx = waiting.findIndex((s) => s.readyState === s.OPEN);
+    if (idx !== -1) {
+      const partner = waiting.splice(idx, 1)[0];
+      return pair(socket, partner);
+    }
+  }
+
+  // 3) Otherwise wait a bit — a shared-interest partner may arrive. The
+  //    fallback sweeper below pairs anyone who has waited past FALLBACK_MS.
+  socket.waitingSince = Date.now();
+  waiting.push(socket);
+  send(socket, { type: 'waiting' });
 }
+
+// Fallback matcher: pair up users who've been waiting too long, regardless of
+// interests, so an interest-seeker never waits forever.
+setInterval(() => {
+  const now = Date.now();
+  const stale = waiting.filter((s) => s.readyState === s.OPEN && now - (s.waitingSince || now) >= FALLBACK_MS);
+  while (stale.length >= 2) {
+    const a = stale.shift();
+    const b = stale.shift();
+    waiting = waiting.filter((s) => s !== a && s !== b);
+    pair(a, b);
+  }
+}, 2000);
 
 // Kick a socket off entirely (used when someone is banned).
 function banSocket(socket) {
@@ -116,6 +169,7 @@ function banSocket(socket) {
 wss.on('connection', (socket, req) => {
   socket.id = nextId++;
   socket.ip = getClientIp(req);
+  socket.interests = [];
 
   // Refuse banned users immediately.
   if (bannedIps.has(socket.ip)) {
@@ -132,6 +186,7 @@ wss.on('connection', (socket, req) => {
 
     switch (msg.type) {
       case 'ready':
+        socket.interests = normalizeInterests(msg.interests);
         unpair(socket, true);
         enqueue(socket);
         break;
@@ -142,7 +197,17 @@ wss.on('connection', (socket, req) => {
         break;
       }
 
+      // Relay a text chat message to the current partner (length-capped).
+      case 'chat': {
+        const partner = partners.get(socket);
+        if (partner && typeof msg.text === 'string' && msg.text.trim()) {
+          send(partner, { type: 'chat', text: msg.text.slice(0, 500) });
+        }
+        break;
+      }
+
       case 'next':
+        if (msg.interests !== undefined) socket.interests = normalizeInterests(msg.interests);
         unpair(socket, true);
         enqueue(socket);
         break;

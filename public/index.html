@@ -7,8 +7,7 @@
 
 <!-- In-browser NSFW detection (free, no API key). tfjs is the ML engine;
      nsfwjs is the model that scores a frame for explicit content.
-     These load from a CDN. If they fail to load, the app still works —
-     moderation just shows as "off" (see initModeration below). -->
+     If these fail to load, the app still works — moderation shows "off". -->
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.21.0/dist/tf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/nsfwjs@2.4.2/dist/nsfwjs.min.js"></script>
 
@@ -45,23 +44,37 @@
   video { width: 100%; height: 100%; object-fit: cover; background: #000; }
   .label { position: absolute; left: 12px; bottom: 12px; background: rgba(0,0,0,0.55); padding: 4px 10px; border-radius: 8px; font-size: 13px; }
   .placeholder { position: absolute; color: var(--muted); font-size: 15px; text-align: center; padding: 20px; }
-
-  /* Warning overlay shown on your own video if your camera trips the check. */
   .warn-overlay {
     position: absolute; inset: 0; background: rgba(255,84,112,0.92); color: #fff;
     display: none; align-items: center; justify-content: center; text-align: center;
     padding: 24px; font-size: 15px; font-weight: 600; z-index: 5;
   }
 
+  /* Text chat */
+  .chat { height: 170px; display: flex; flex-direction: column; border-top: 1px solid #262a36; padding: 10px 12px; gap: 8px; }
+  .chat-log { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; font-size: 14px; padding-right: 4px; }
+  .chat-msg { max-width: 75%; padding: 6px 11px; border-radius: 12px; line-height: 1.35; overflow-wrap: anywhere; }
+  .chat-msg.me { align-self: flex-end; background: var(--accent); color: #fff; }
+  .chat-msg.them { align-self: flex-start; background: var(--panel); }
+  .chat-msg.sys { align-self: center; background: transparent; color: var(--muted); font-size: 12px; text-align: center; }
+  .chat-row { display: flex; gap: 8px; }
+  .chat-row input { flex: 1; background: var(--panel); border: 1px solid #2c3140; color: var(--text); border-radius: 10px; padding: 10px 12px; font-size: 14px; }
+  .chat-row input:disabled { opacity: 0.5; }
+
   .controls { padding: 14px; display: flex; gap: 12px; justify-content: center; align-items: center; border-top: 1px solid #262a36; flex-wrap: wrap; }
-  button { border: none; border-radius: 10px; padding: 12px 24px; font-size: 15px; font-weight: 600; cursor: pointer; color: #fff; transition: background 0.15s, filter 0.15s; }
+  .interests-input {
+    background: var(--panel); border: 1px solid #2c3140; color: var(--text);
+    border-radius: 10px; padding: 11px 12px; font-size: 14px; min-width: 240px;
+  }
+  .interests-input::placeholder { color: var(--muted); }
+  button { border: none; border-radius: 10px; padding: 12px 22px; font-size: 15px; font-weight: 600; cursor: pointer; color: #fff; transition: background 0.15s, filter 0.15s; }
   .btn-start { background: var(--accent); } .btn-start:hover { background: var(--accent-hover); }
   .btn-next { background: var(--danger); } .btn-next:hover { filter: brightness(1.05); }
   .btn-report { background: #6b7280; } .btn-report:hover { filter: brightness(1.1); }
+  .btn-send { background: var(--accent); padding: 10px 18px; }
   button:disabled { opacity: 0.5; cursor: default; }
   .status { color: var(--muted); font-size: 14px; min-width: 160px; text-align: center; }
 
-  /* Full-screen banned message. */
   .banned-screen {
     position: fixed; inset: 0; background: #0b0d13; color: #fff; z-index: 50;
     display: none; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 30px;
@@ -69,7 +82,10 @@
   .banned-screen h1 { color: var(--danger); margin-bottom: 10px; }
   .banned-screen p { color: var(--muted); max-width: 420px; }
 
-  @media (max-width: 700px) { .videos { grid-template-columns: 1fr; } }
+  @media (max-width: 700px) {
+    .videos { grid-template-columns: 1fr; }
+    .chat { height: 130px; }
+  }
 </style>
 </head>
 <body>
@@ -94,11 +110,22 @@
     </div>
   </div>
 
+  <div class="chat">
+    <div class="chat-log" id="chat-log">
+      <div class="chat-msg sys">Text chat will appear here once you're matched with someone.</div>
+    </div>
+    <div class="chat-row">
+      <input id="chat-input" type="text" placeholder="Say something…" maxlength="500" autocomplete="off" disabled />
+      <button class="btn-send" id="chat-send" disabled>Send</button>
+    </div>
+  </div>
+
   <div class="controls">
+    <input class="interests-input" id="interests" type="text" placeholder="Interests (optional, comma-separated)" autocomplete="off" />
     <button class="btn-start" id="startBtn">Start</button>
     <button class="btn-next" id="nextBtn" disabled>Next</button>
     <button class="btn-report" id="reportBtn" disabled>Report</button>
-    <div class="status" id="status">Click Start to turn on your camera.</div>
+    <div class="status" id="status">Add interests (optional), then click Start.</div>
   </div>
 
   <div class="banned-screen" id="banned-screen">
@@ -106,39 +133,29 @@
     <p>You were reported for inappropriate behavior and can no longer use this service.</p>
   </div>
 
-<!-- hidden canvas used to grab a frame from your camera for the safety check -->
 <canvas id="sampler" width="224" height="224" style="display:none"></canvas>
 
 <script>
 const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
 
-// --- Moderation tuning (easy to adjust) -----------------------------------
-const SAMPLE_MS = 4000;      // how often to check your own camera
-const EXPLICIT_THRESHOLD = 0.60;  // Porn + Hentai probability that counts as a trip
-const SEXY_THRESHOLD = 0.85;      // softer "Sexy" probability that counts as a trip
-const TRIPS_BEFORE_ACTION = 2;    // consecutive trips before we act (avoids one-off false positives)
-const MAX_STRIKES = 3;            // after this many violations we stop the user
+// --- Moderation tuning ----------------------------------------------------
+const SAMPLE_MS = 4000;
+const EXPLICIT_THRESHOLD = 0.60;
+const SEXY_THRESHOLD = 0.85;
+const TRIPS_BEFORE_ACTION = 2;
+const MAX_STRIKES = 3;
 
-const startBtn = document.getElementById('startBtn');
-const nextBtn = document.getElementById('nextBtn');
-const reportBtn = document.getElementById('reportBtn');
-const statusEl = document.getElementById('status');
-const connDot = document.getElementById('conn-dot');
-const safetyBadge = document.getElementById('safety');
-const localVideo = document.getElementById('local');
-const remoteVideo = document.getElementById('remote');
-const localPlaceholder = document.getElementById('local-placeholder');
-const remotePlaceholder = document.getElementById('remote-placeholder');
-const warnOverlay = document.getElementById('warn-overlay');
-const bannedScreen = document.getElementById('banned-screen');
-const sampler = document.getElementById('sampler');
+const $ = (id) => document.getElementById(id);
+const startBtn = $('startBtn'), nextBtn = $('nextBtn'), reportBtn = $('reportBtn');
+const statusEl = $('status'), connDot = $('conn-dot'), safetyBadge = $('safety');
+const localVideo = $('local'), remoteVideo = $('remote');
+const localPlaceholder = $('local-placeholder'), remotePlaceholder = $('remote-placeholder');
+const warnOverlay = $('warn-overlay'), bannedScreen = $('banned-screen'), sampler = $('sampler');
+const interestsEl = $('interests'), chatLog = $('chat-log'), chatInput = $('chat-input'), chatSend = $('chat-send');
 
 let localStream = null, ws = null, pc = null, isInitiator = false;
-let inCall = false;
-let nsfwModel = null;
-let moderationState = 'off';   // 'off' | 'loading' | 'on'
-let tripCount = 0, strikes = 0;
-let moderationTimer = null;
+let inCall = false, nsfwModel = null, moderationState = 'off';
+let tripCount = 0, strikes = 0, moderationTimer = null;
 
 function setStatus(t) { statusEl.textContent = t; }
 
@@ -150,8 +167,28 @@ function updateSafetyBadge() {
     : 'Safety check: off';
 }
 
-// --- Start: camera, safety model, and server connection -------------------
+// Read + clean the interests box into an array.
+function getInterests() {
+  return interestsEl.value.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean).slice(0, 10);
+}
 
+// --- Chat helpers ---------------------------------------------------------
+// Note: uses textContent (never innerHTML) so messages can't inject HTML.
+function addChat(text, kind) {
+  const div = document.createElement('div');
+  div.className = 'chat-msg ' + kind;
+  div.textContent = text;
+  chatLog.appendChild(div);
+  chatLog.scrollTop = chatLog.scrollHeight;
+}
+function clearChat() { chatLog.innerHTML = ''; }
+function setChatEnabled(on) {
+  chatInput.disabled = !on;
+  chatSend.disabled = !on;
+  if (on) chatInput.focus();
+}
+
+// --- Start ----------------------------------------------------------------
 startBtn.onclick = async () => {
   try {
     localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
@@ -164,24 +201,22 @@ startBtn.onclick = async () => {
   startBtn.disabled = true;
   nextBtn.disabled = false;
 
-  initModeration();     // loads in the background; never blocks the app
+  initModeration();
   connectToServer();
 };
 
-// Load the NSFW model. If anything fails, moderation just stays "off".
 async function initModeration() {
   moderationState = 'loading'; updateSafetyBadge();
   try {
     if (typeof nsfwjs === 'undefined' || typeof tf === 'undefined') {
       throw new Error('Safety libraries did not load (CDN blocked?).');
     }
-    nsfwModel = await nsfwjs.load();   // default model
+    nsfwModel = await nsfwjs.load();
     moderationState = 'on';
     startModerationLoop();
   } catch (err) {
     console.warn('Moderation disabled:', err);
-    nsfwModel = null;
-    moderationState = 'off';
+    nsfwModel = null; moderationState = 'off';
   }
   updateSafetyBadge();
 }
@@ -201,26 +236,16 @@ async function checkOwnCamera() {
     preds.forEach((p) => { s[p.className] = p.probability; });
     const explicit = (s['Porn'] || 0) + (s['Hentai'] || 0);
     const trip = explicit >= EXPLICIT_THRESHOLD || (s['Sexy'] || 0) >= SEXY_THRESHOLD;
-
-    if (trip) {
-      tripCount++;
-      if (tripCount >= TRIPS_BEFORE_ACTION) handleSelfViolation();
-    } else {
-      tripCount = 0;
-    }
-  } catch (err) {
-    // A single failed check shouldn't break anything.
-    console.warn('Safety check error:', err);
-  }
+    if (trip) { tripCount++; if (tripCount >= TRIPS_BEFORE_ACTION) handleSelfViolation(); }
+    else { tripCount = 0; }
+  } catch (err) { console.warn('Safety check error:', err); }
 }
 
 function handleSelfViolation() {
-  tripCount = 0;
-  strikes++;
+  tripCount = 0; strikes++;
   endCall();
   warnOverlay.style.display = 'flex';
   setTimeout(() => { warnOverlay.style.display = 'none'; }, 4000);
-
   if (strikes >= MAX_STRIKES) {
     setStatus('Too many violations. Please reload to continue.');
     nextBtn.disabled = true; reportBtn.disabled = true;
@@ -231,7 +256,6 @@ function handleSelfViolation() {
 }
 
 // --- Server connection ----------------------------------------------------
-
 function connectToServer() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   ws = new WebSocket(`${proto}://${location.host}`);
@@ -239,7 +263,7 @@ function connectToServer() {
   ws.onopen = () => {
     connDot.classList.add('live');
     setStatus('Looking for a stranger...');
-    ws.send(JSON.stringify({ type: 'ready' }));
+    ws.send(JSON.stringify({ type: 'ready', interests: getInterests() }));
   };
   ws.onclose = () => { connDot.classList.remove('live'); };
 
@@ -252,15 +276,24 @@ function connectToServer() {
       case 'matched':
         isInitiator = msg.initiator;
         setStatus('Stranger found! Connecting...');
+        clearChat();
+        if (msg.shared && msg.shared.length) addChat('You both like: ' + msg.shared.join(', '), 'sys');
+        else addChat('Matched! Say hi.', 'sys');
+        setChatEnabled(true);
         await startCall();
         break;
       case 'signal':
         await handleSignal(msg.data);
         break;
+      case 'chat':
+        addChat(msg.text, 'them');
+        break;
       case 'partner-left':
         setStatus('Stranger left. Finding a new one...');
+        addChat('Stranger disconnected.', 'sys');
+        setChatEnabled(false);
         endCall();
-        ws.send(JSON.stringify({ type: 'ready' }));
+        ws.send(JSON.stringify({ type: 'ready', interests: getInterests() }));
         break;
       case 'report-ack':
         setStatus('Thanks — that person was reported and removed.');
@@ -282,7 +315,6 @@ function showBanned() {
 }
 
 // --- WebRTC ---------------------------------------------------------------
-
 async function startCall() {
   pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
   localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
@@ -322,27 +354,41 @@ async function handleSignal(data) {
 function endCall() {
   inCall = false;
   reportBtn.disabled = true;
+  setChatEnabled(false);
   if (pc) { pc.close(); pc = null; }
   remoteVideo.srcObject = null;
   remotePlaceholder.style.display = 'block';
 }
 
-// --- Buttons --------------------------------------------------------------
-
+// --- Buttons + chat sending ----------------------------------------------
 nextBtn.onclick = () => {
   setStatus('Finding a new stranger...');
+  clearChat();
   endCall();
-  ws.send(JSON.stringify({ type: 'next' }));
+  ws.send(JSON.stringify({ type: 'next', interests: getInterests() }));
 };
 
 reportBtn.onclick = () => {
   if (!inCall) return;
   setStatus('Reporting...');
   ws.send(JSON.stringify({ type: 'report' }));
+  clearChat();
   endCall();
-  // After reporting we automatically look for a new partner.
-  ws.send(JSON.stringify({ type: 'ready' }));
+  ws.send(JSON.stringify({ type: 'ready', interests: getInterests() }));
 };
+
+function sendChat() {
+  const text = chatInput.value.trim();
+  // Chat works as soon as you're matched (it goes through the server), even
+  // before the video link finishes connecting — so gate on the input being
+  // enabled, not on the video call state.
+  if (!text || chatInput.disabled || !ws) return;
+  ws.send(JSON.stringify({ type: 'chat', text }));
+  addChat(text, 'me');
+  chatInput.value = '';
+}
+chatSend.onclick = sendChat;
+chatInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); sendChat(); } });
 
 updateSafetyBadge();
 </script>
