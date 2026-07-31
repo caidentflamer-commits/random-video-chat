@@ -69,7 +69,8 @@
     display: none; align-items: center; justify-content: center; text-align: center;
     padding: 24px; font-size: 15px; font-weight: 600; z-index: 5;
   }
-  #localPlaceholder { position: absolute; inset: 0; display: grid; place-items: center; color: var(--text-subtle); font-size: var(--fs-sm); text-align: center; padding: 16px; }
+  #localPlaceholder { position: absolute; inset: 0; display: grid; place-items: center; color: var(--text-subtle); font-size: var(--fs-sm); text-align: center; padding: 16px; cursor: pointer; }
+  #localPlaceholder:hover { color: var(--text-muted); }
 
   /* ---- Bottom row ---- */
   .bottomrow { flex: 0 0 auto; display: grid; grid-template-columns: 1fr 1fr; gap: 24px; align-items: stretch; padding: 16px 24px 22px; }
@@ -145,6 +146,8 @@
     .big-btn, #connectedActions { flex: none; height: 54px; }
     #connectedActions .c-btn { font-size: var(--fs-lg); }
     .control-row { height: auto; flex-wrap: wrap; }
+    /* The safety warning must cover the screen, not the tiny camera PiP. */
+    .warn-overlay { position: fixed; inset: 0; z-index: 80; }
   }
 </style>
 </head>
@@ -195,7 +198,7 @@
     <!-- Right tile: your camera (always) -->
     <div class="c-tile tile" id="rightTile" style="background:radial-gradient(120% 90% at 50% 25%,#6b7690 0%,#343b4c 60%,#20242f 100%)">
       <video id="local" autoplay playsinline muted></video>
-      <div id="localPlaceholder">Camera off — click "Enable camera"</div>
+      <div id="localPlaceholder">Tap to turn your camera on — or just hit Start</div>
       <div class="warn-overlay" id="warn-overlay">Inappropriate content detected on your camera. You were disconnected.</div>
       <span class="c-tile__name" id="localName">You · this is what they'll see</span>
     </div>
@@ -591,6 +594,9 @@ els.camBtn.addEventListener('click', () => {
   const t = localStream && localStream.getVideoTracks()[0]; if (!t) return;
   t.enabled = !t.enabled; syncMediaButtons();
 });
+// Tap the idle preview tile to enable the camera (a user gesture), so we don't
+// prompt for camera/mic on page load.
+els.localPlaceholder.addEventListener('click', () => { if (!localStream) initLocalMedia(); });
 
 // --- Moderation (NSFW self-camera check) ----------------------------------
 async function initModeration() {
@@ -750,7 +756,10 @@ els.startBtn.addEventListener('click', async () => {
   if (!localStream && !(await initLocalMedia())) return;
   setSearchReason('searching');
   setState('searching');
-  connectToServer();
+  // Reuse the existing socket after a Stop/Cancel instead of opening a new one,
+  // so repeated Stop -> Start doesn't leak zombie connections on the server.
+  if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: 'ready', ...matchPayload() }));
+  else connectToServer();
 });
 els.cancelBtn.addEventListener('click', () => {
   if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: 'stop' }));
@@ -806,8 +815,9 @@ els.reportBackdrop.addEventListener('click', closeReport);
 els.reportSubmit.addEventListener('click', () => {
   const payload = { reason: reportReason || 'unspecified', note: els.reportNote.value.trim().slice(0, 500) };
   if (reportTarget === 'current') {
-    ws.send(JSON.stringify({ type: 'report', ...payload }));
+    if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: 'report', ...payload }));
     teardownCall(); clearChat();
+    setSearchReason('searching');
     setState('searching');       // server re-queues the reporter
   } else {
     if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: 'report-last', ...payload }));
@@ -819,7 +829,8 @@ els.reportSubmit.addEventListener('click', () => {
 // --- Boot -----------------------------------------------------------------
 setState('idle');
 updateShield();
-initLocalMedia();   // request camera up front so the idle preview is live
+// Camera is NOT requested on load — it's acquired on the first user gesture
+// (tapping the preview tile or clicking Start).
 </script>
 </body>
 </html>
