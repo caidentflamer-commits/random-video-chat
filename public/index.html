@@ -24,7 +24,9 @@
   }
 
   html, body { height: 100%; }
-  body { margin: 0; display: flex; flex-direction: column; min-height: 100vh; }
+  /* Fill the viewport exactly and never scroll the page — inner rows flex to fit
+     short laptop screens instead of pushing the controls off the bottom. */
+  body { margin: 0; display: flex; flex-direction: column; height: 100vh; height: 100dvh; overflow: hidden; }
 
   .shell { flex: 1; display: flex; flex-direction: column; width: 100%; max-width: 1180px; margin: 0 auto; min-height: 0; }
 
@@ -39,7 +41,7 @@
   .shield svg { display: block; }
 
   /* ---- Video row ---- */
-  .videorow { flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 14px 24px 0; }
+  .videorow { flex: 1; min-height: 120px; display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 14px 24px 0; }
   .tile { height: 100%; aspect-ratio: auto; }              /* fill the row instead of a fixed ratio */
   #leftTile { background: var(--surface); }
   .tile > video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: #000; }
@@ -70,11 +72,11 @@
   #localPlaceholder { position: absolute; inset: 0; display: grid; place-items: center; color: var(--text-subtle); font-size: var(--fs-sm); text-align: center; padding: 16px; }
 
   /* ---- Bottom row ---- */
-  .bottomrow { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; align-items: stretch; padding: 16px 24px 22px; }
-  .col { display: flex; flex-direction: column; gap: 10px; }
+  .bottomrow { flex: 0 0 auto; display: grid; grid-template-columns: 1fr 1fr; gap: 24px; align-items: stretch; padding: 16px 24px 22px; }
+  .col { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
 
   .chat-panel {
-    min-height: 130px; flex: 1; background: var(--surface); border: 1px solid var(--border);
+    height: clamp(90px, 20vh, 140px); flex: none; min-height: 0; background: var(--surface); border: 1px solid var(--border);
     border-radius: var(--r-md); padding: 12px 14px; display: flex; flex-direction: column; gap: 8px;
     justify-content: flex-end; overflow-y: auto;
   }
@@ -86,8 +88,8 @@
   .msg-bar .c-input { height: 34px; padding: 0 12px; font-size: var(--fs-sm); border-radius: var(--r-sm); }
   .msg-bar .c-btn { height: 34px; }
 
-  .big-btn { flex: 1; min-height: 130px; font-size: var(--fs-xl); }
-  #connectedActions { display: grid; grid-template-columns: 2fr 1fr; gap: 12px; flex: 1; min-height: 130px; }
+  .big-btn { flex: 1; min-height: 0; font-size: var(--fs-xl); }
+  #connectedActions { display: grid; grid-template-columns: 2fr 1fr; gap: 12px; flex: 1; min-height: 0; }
   #connectedActions .c-btn { height: 100%; font-size: var(--fs-xl); }
   .btn-stop { background: var(--danger-tint); color: var(--danger); border-color: var(--danger-tint); box-shadow: none; }
   .btn-stop:hover { background: var(--danger-tint); }
