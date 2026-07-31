@@ -62,14 +62,28 @@
   .chat-row input:disabled { opacity: 0.5; }
 
   .controls { padding: 14px; display: flex; gap: 12px; justify-content: center; align-items: center; border-top: 1px solid #262a36; flex-wrap: wrap; }
-  .tags { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 14px; border-top: 1px solid #262a36; align-items: center; }
+  .interests-area { border-top: 1px solid #262a36; padding: 10px 14px; display: flex; flex-direction: column; gap: 8px; }
+  .selected-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
   .tags-label { color: var(--muted); font-size: 13px; margin-right: 4px; }
+  .muted-note { color: var(--muted); font-size: 13px; }
+  .tag-search {
+    background: var(--panel); border: 1px solid #2c3140; color: var(--text);
+    border-radius: 10px; padding: 9px 12px; font-size: 14px;
+  }
+  .tag-search::placeholder { color: var(--muted); }
+  .tags { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; max-height: 104px; overflow-y: auto; }
   .tag {
     background: var(--panel); border: 1px solid #2c3140; color: var(--text);
     border-radius: 999px; padding: 7px 14px; font-size: 13px; font-weight: 600; cursor: pointer;
   }
   .tag:hover { border-color: #3b4256; }
   .tag.selected { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .tag.hidden { display: none; }
+  .pill {
+    background: var(--accent); color: #fff; border: none; border-radius: 999px;
+    padding: 6px 12px; font-size: 13px; font-weight: 600; cursor: pointer;
+  }
+  .pill:hover { filter: brightness(1.08); }
   button { border: none; border-radius: 10px; padding: 12px 22px; font-size: 15px; font-weight: 600; cursor: pointer; color: #fff; transition: background 0.15s, filter 0.15s; }
   .btn-start { background: var(--accent); } .btn-start:hover { background: var(--accent-hover); }
   .btn-next { background: var(--danger); } .btn-next:hover { filter: brightness(1.05); }
@@ -123,7 +137,14 @@
     </div>
   </div>
 
-  <div class="tags" id="tags"><span class="tags-label">Interests (optional):</span></div>
+  <div class="interests-area">
+    <div class="selected-row" id="selected-row">
+      <span class="tags-label">Interests:</span>
+      <span class="muted-note" id="selected-empty">none picked (optional)</span>
+    </div>
+    <input class="tag-search" id="tag-search" type="text" placeholder="Search interests…" autocomplete="off" />
+    <div class="tags" id="tags"></div>
+  </div>
 
   <div class="controls">
     <button class="btn-start" id="startBtn">Start</button>
@@ -155,7 +176,8 @@ const statusEl = $('status'), connDot = $('conn-dot'), safetyBadge = $('safety')
 const localVideo = $('local'), remoteVideo = $('remote');
 const localPlaceholder = $('local-placeholder'), remotePlaceholder = $('remote-placeholder');
 const warnOverlay = $('warn-overlay'), bannedScreen = $('banned-screen'), sampler = $('sampler');
-const tagsEl = $('tags'), chatLog = $('chat-log'), chatInput = $('chat-input'), chatSend = $('chat-send');
+const tagsEl = $('tags'), tagSearch = $('tag-search'), selectedRow = $('selected-row'), selectedEmpty = $('selected-empty');
+const chatLog = $('chat-log'), chatInput = $('chat-input'), chatSend = $('chat-send');
 
 let localStream = null, ws = null, pc = null, isInitiator = false;
 let inCall = false, nsfwModel = null, moderationState = 'off';
@@ -171,22 +193,71 @@ function updateSafetyBadge() {
     : 'Safety check: off';
 }
 
-// Preset interest tags everyone chooses from (edit this list freely).
-const INTEREST_OPTIONS = ['Gaming','Music','Movies','Sports','Art','Tech','Travel','Books','Anime','Food','Fitness','Memes'];
-INTEREST_OPTIONS.forEach((label) => {
+// Preset interest tags everyone chooses from. Edit this list freely — new tags
+// appear automatically and the search box filters them.
+const INTEREST_OPTIONS = [
+  'Gaming','Video Games','Esports','Minecraft','Fortnite','Roblox','League of Legends','Valorant','Call of Duty','Among Us',
+  'Music','Rock','Pop','Hip Hop','Rap','K-Pop','EDM','Jazz','Classical','Metal','Country','Guitar','Piano','Singing','Producing',
+  'Movies','Anime','Manga','TV Shows','Netflix','Marvel','Horror','Comedy','Sci-Fi','Disney','Documentaries',
+  'Sports','Football','Soccer','Basketball','Baseball','Tennis','Golf','Hockey','MMA','Boxing','Cricket','Formula 1',
+  'Fitness','Gym','Running','Yoga','Hiking','Cycling','Swimming','Skateboarding','Surfing','Snowboarding','Climbing',
+  'Art','Drawing','Painting','Photography','Design','Fashion','Makeup','Tattoos','Architecture',
+  'Tech','Coding','Programming','AI','Crypto','Startups','Cars','Motorcycles','Aviation',
+  'Travel','Food','Cooking','Baking','Coffee','Wine','Foodie',
+  'Books','Reading','Writing','Poetry','Comics',
+  'Science','Space','Astronomy','History','Philosophy','Politics','Psychology','Economics',
+  'Nature','Animals','Dogs','Cats','Gardening','Fishing','Camping','Astrology',
+  'Dancing','Languages','Memes','Podcasts','Board Games','Chess','DIY','Investing','Volunteering','Meditation'
+];
+
+const chipByKey = {};
+const labelByKey = {};
+const selected = new Set();
+
+INTEREST_OPTIONS.slice().sort((a, b) => a.localeCompare(b)).forEach((label) => {
+  const key = label.toLowerCase();
+  labelByKey[key] = label;
   const b = document.createElement('button');
   b.type = 'button';
   b.className = 'tag';
   b.textContent = label;
-  b.dataset.interest = label.toLowerCase();
-  b.addEventListener('click', () => b.classList.toggle('selected'));
+  b.dataset.interest = key;
+  b.addEventListener('click', () => toggleInterest(key));
   tagsEl.appendChild(b);
+  chipByKey[key] = b;
 });
 
-// The interests you send are simply the tags you've highlighted.
-function getInterests() {
-  return [...tagsEl.querySelectorAll('.tag.selected')].map((b) => b.dataset.interest);
+function toggleInterest(key) {
+  if (selected.has(key)) selected.delete(key); else selected.add(key);
+  if (chipByKey[key]) chipByKey[key].classList.toggle('selected', selected.has(key));
+  renderSelected();
 }
+
+// Show the picked interests as removable pills, so they stay visible even when
+// the search box has filtered them out of the list below.
+function renderSelected() {
+  [...selectedRow.querySelectorAll('.pill')].forEach((p) => p.remove());
+  selectedEmpty.style.display = selected.size ? 'none' : 'inline';
+  selected.forEach((key) => {
+    const pill = document.createElement('button');
+    pill.type = 'button';
+    pill.className = 'pill';
+    pill.textContent = (labelByKey[key] || key) + '  ✕';
+    pill.addEventListener('click', () => toggleInterest(key));
+    selectedRow.appendChild(pill);
+  });
+}
+
+// Filter the tag list as the user types in the search box.
+tagSearch.addEventListener('input', () => {
+  const q = tagSearch.value.trim().toLowerCase();
+  Object.values(chipByKey).forEach((b) => {
+    b.classList.toggle('hidden', q !== '' && !b.dataset.interest.includes(q));
+  });
+});
+
+// The interests you send are the tags you've selected.
+function getInterests() { return [...selected]; }
 
 // --- Chat helpers ---------------------------------------------------------
 // Note: uses textContent (never innerHTML) so messages can't inject HTML.
