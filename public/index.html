@@ -62,11 +62,14 @@
   .chat-row input:disabled { opacity: 0.5; }
 
   .controls { padding: 14px; display: flex; gap: 12px; justify-content: center; align-items: center; border-top: 1px solid #262a36; flex-wrap: wrap; }
-  .interests-input {
+  .tags { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 14px; border-top: 1px solid #262a36; align-items: center; }
+  .tags-label { color: var(--muted); font-size: 13px; margin-right: 4px; }
+  .tag {
     background: var(--panel); border: 1px solid #2c3140; color: var(--text);
-    border-radius: 10px; padding: 11px 12px; font-size: 14px; min-width: 240px;
+    border-radius: 999px; padding: 7px 14px; font-size: 13px; font-weight: 600; cursor: pointer;
   }
-  .interests-input::placeholder { color: var(--muted); }
+  .tag:hover { border-color: #3b4256; }
+  .tag.selected { background: var(--accent); border-color: var(--accent); color: #fff; }
   button { border: none; border-radius: 10px; padding: 12px 22px; font-size: 15px; font-weight: 600; cursor: pointer; color: #fff; transition: background 0.15s, filter 0.15s; }
   .btn-start { background: var(--accent); } .btn-start:hover { background: var(--accent-hover); }
   .btn-next { background: var(--danger); } .btn-next:hover { filter: brightness(1.05); }
@@ -120,12 +123,13 @@
     </div>
   </div>
 
+  <div class="tags" id="tags"><span class="tags-label">Interests (optional):</span></div>
+
   <div class="controls">
-    <input class="interests-input" id="interests" type="text" placeholder="Interests (optional, comma-separated)" autocomplete="off" />
     <button class="btn-start" id="startBtn">Start</button>
     <button class="btn-next" id="nextBtn" disabled>Next</button>
     <button class="btn-report" id="reportBtn" disabled>Report</button>
-    <div class="status" id="status">Add interests (optional), then click Start.</div>
+    <div class="status" id="status">Pick interests (optional), then click Start.</div>
   </div>
 
   <div class="banned-screen" id="banned-screen">
@@ -151,7 +155,7 @@ const statusEl = $('status'), connDot = $('conn-dot'), safetyBadge = $('safety')
 const localVideo = $('local'), remoteVideo = $('remote');
 const localPlaceholder = $('local-placeholder'), remotePlaceholder = $('remote-placeholder');
 const warnOverlay = $('warn-overlay'), bannedScreen = $('banned-screen'), sampler = $('sampler');
-const interestsEl = $('interests'), chatLog = $('chat-log'), chatInput = $('chat-input'), chatSend = $('chat-send');
+const tagsEl = $('tags'), chatLog = $('chat-log'), chatInput = $('chat-input'), chatSend = $('chat-send');
 
 let localStream = null, ws = null, pc = null, isInitiator = false;
 let inCall = false, nsfwModel = null, moderationState = 'off';
@@ -167,9 +171,21 @@ function updateSafetyBadge() {
     : 'Safety check: off';
 }
 
-// Read + clean the interests box into an array.
+// Preset interest tags everyone chooses from (edit this list freely).
+const INTEREST_OPTIONS = ['Gaming','Music','Movies','Sports','Art','Tech','Travel','Books','Anime','Food','Fitness','Memes'];
+INTEREST_OPTIONS.forEach((label) => {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'tag';
+  b.textContent = label;
+  b.dataset.interest = label.toLowerCase();
+  b.addEventListener('click', () => b.classList.toggle('selected'));
+  tagsEl.appendChild(b);
+});
+
+// The interests you send are simply the tags you've highlighted.
 function getInterests() {
-  return interestsEl.value.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean).slice(0, 10);
+  return [...tagsEl.querySelectorAll('.tag.selected')].map((b) => b.dataset.interest);
 }
 
 // --- Chat helpers ---------------------------------------------------------
