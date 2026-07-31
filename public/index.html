@@ -301,7 +301,17 @@ function setChatEnabled(on) {
 // --- Start ----------------------------------------------------------------
 startBtn.onclick = async () => {
   try {
-    localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+    // Ask for a wide 16:9 capture (like Discord) so we use the camera's full
+    // field of view instead of a cropped, squarish default. "ideal" lets the
+    // browser fall back gracefully if the camera can't do exactly this.
+    localStream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+        aspectRatio: { ideal: 16 / 9 }
+      },
+      audio: true
+    });
   } catch {
     setStatus('Could not access camera/mic. Please allow permission.');
     return;
