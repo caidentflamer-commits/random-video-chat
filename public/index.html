@@ -3,235 +3,263 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Random Video Chat</title>
-
-<!-- Clarity design system — Inter typeface -->
-<link rel="preconnect" href="https://fonts.googleapis.com" />
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet" />
+<title>Openline — talk to someone new</title>
 
 <!-- In-browser NSFW detection (free, no API key). tfjs is the ML engine;
      nsfwjs is the model that scores a frame for explicit content.
-     If these fail to load, the app still works — moderation shows "off". -->
+     If these fail to load, the app still works — the shield shows "off". -->
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.21.0/dist/tf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/nsfwjs@2.4.2/dist/nsfwjs.min.js"></script>
 
+<!-- Clarity design system -->
+<link rel="stylesheet" href="clarity.css" />
+
 <style>
-  /* ============================================================================
-     Clarity design system — applied to the live video-chat app.
-     Clarity is light-first with a dark "stage" for the live call; this app IS
-     the call, so the whole surface uses Clarity's dark stage palette.
-     Class names + IDs are unchanged so all app logic keeps working.
-     ========================================================================== */
-  :root {
-    /* surfaces (Clarity dark stage) */
-    --bg: #0d1117; --surface: #161b22; --surface-2: #21262d; --elevated: #262c36;
-    --border: rgba(255,255,255,0.10); --border-strong: rgba(255,255,255,0.20);
-    /* text */
-    --text: #f0f3f8; --text-muted: #aab2c0; --text-subtle: #6b7482;
-    /* brand + semantic */
-    --primary: #6d63ff; --primary-hover: #8078ff; --primary-tint: rgba(109,99,255,0.16);
-    --ok: #22c55e; --ok-tint: rgba(34,197,94,0.14);
-    --danger: #fb5f7a; --danger-hover: #ff7a90; --danger-tint: rgba(251,95,122,0.14);
-    --warn: #f7b955; --warn-tint: rgba(247,185,85,0.14);
-    --scrim: rgba(0,0,0,0.55);
-    /* radius / type / elevation / motion */
-    --r-sm: 6px; --r-md: 10px; --r-lg: 16px; --r-pill: 999px;
-    --font: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
-    --mono: 'JetBrains Mono', ui-monospace, monospace;
-    --shadow-md: 0 4px 14px rgba(0,0,0,0.40);
-    --shadow-lg: 0 18px 44px rgba(0,0,0,0.55);
-    --ring: 0 0 0 4px rgba(109,99,255,0.35);
-    --dur: 160ms; --ease: cubic-bezier(0.4,0,0.2,1);
+  /* Dark-stage brand ramp (Clarity ships it only under [data-theme="dark"];
+     the handoff applies it on the .c-stage wrapper). */
+  .c-stage {
+    --primary:#6d63ff; --primary-hover:#8078ff; --primary-active:#5a50f0;
+    --accent:#38bdf8; --danger:#fb5f7a; --danger-hover:#ff7a90;
+    --online:#3fcf6b; --warning:#f0a92e;
   }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0; font-family: var(--font); font-size: 16px; color: var(--text);
-    background: var(--bg); height: 100vh; display: flex; flex-direction: column;
-    -webkit-font-smoothing: antialiased;
-  }
-  :focus-visible { outline: none; box-shadow: var(--ring); border-radius: var(--r-sm); }
 
-  /* ---- Header ---- */
-  header {
-    padding: 14px 22px; font-weight: 700; font-size: 17px; letter-spacing: -0.01em;
-    border-bottom: 1px solid var(--border); background: var(--surface);
-    display: flex; align-items: center; gap: 10px;
-  }
-  header .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--text-subtle); transition: background var(--dur); }
-  header .dot.live { background: var(--ok); box-shadow: 0 0 0 4px var(--ok-tint); }
-  header .spacer { flex: 1; }
-  .safety {
-    font-size: 12px; font-weight: 600; padding: 5px 11px; border-radius: var(--r-pill);
-    background: var(--surface-2); color: var(--text-muted); display: flex; align-items: center; gap: 6px;
-  }
-  .safety.on { background: var(--ok-tint); color: var(--ok); }
-  .safety.off { background: var(--danger-tint); color: var(--danger); }
-  .safety.loading { background: var(--warn-tint); color: var(--warn); }
+  html, body { height: 100%; }
+  body { margin: 0; display: flex; flex-direction: column; min-height: 100vh; }
 
-  /* ---- Video stage ---- */
-  .videos { flex: 1; display: grid; grid-template-columns: 1.5fr 1fr; gap: 14px; padding: 16px; min-height: 0; }
-  .video-wrap {
-    position: relative; background: radial-gradient(120% 90% at 50% 20%, #2a3040 0%, #1a1e29 60%, #12151d 100%);
-    border-radius: var(--r-lg); overflow: hidden; border: 1px solid var(--border);
-    display: flex; align-items: center; justify-content: center;
+  .shell { flex: 1; display: flex; flex-direction: column; width: 100%; max-width: 1180px; margin: 0 auto; min-height: 0; }
+
+  /* ---- Status bar ---- */
+  .statusbar { display: flex; align-items: center; justify-content: space-between; padding: 8px 20px; border-bottom: 1px solid var(--border); }
+  .brand { display: flex; align-items: center; gap: 10px; }
+  .brand .logo { width: 16px; height: 16px; border-radius: 5px; background: var(--primary); }
+  .brand .name { font: 600 13px/1 var(--font-display); }
+  .statusbar .center { flex: 1; display: flex; justify-content: center; }
+  .statusbar .right { display: flex; align-items: center; gap: 10px; }
+  .shield { display: grid; place-items: center; width: 26px; height: 26px; border-radius: var(--r-pill); background: var(--online-tint); }
+  .shield svg { display: block; }
+
+  /* ---- Video row ---- */
+  .videorow { flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 14px 24px 0; }
+  .tile { height: 100%; aspect-ratio: auto; }              /* fill the row instead of a fixed ratio */
+  #leftTile { background: var(--surface); }
+  .tile > video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: #000; }
+  .fill { position: absolute; inset: 0; }
+
+  /* idle panel (left tile, before first match) */
+  #idlePanel { display: flex; flex-direction: column; justify-content: center; gap: 14px; padding: 32px; }
+  .idle-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+
+  /* searching panel (left tile) */
+  #searchPanel { justify-content: center; padding: 24px; gap: 10px; }
+
+  /* remote (stranger) wrap — connected */
+  #remotePlaceholder { position: absolute; inset: 0; display: grid; place-items: center; color: var(--text-subtle); font-size: var(--fs-sm); }
+  .report-flag {
+    position: absolute; top: 12px; right: 12px; width: 34px; height: 34px; display: grid; place-items: center;
+    border-radius: var(--r-pill); background: var(--scrim); border: 1px solid rgba(255,255,255,.14);
+    cursor: pointer; backdrop-filter: blur(6px);
   }
-  video { width: 100%; height: 100%; object-fit: cover; background: #000; }
-  .label {
-    position: absolute; left: 12px; bottom: 12px; background: var(--scrim); color: #fff;
-    padding: 5px 11px; border-radius: var(--r-pill); font-size: 12px; font-weight: 500;
-    backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
-  }
-  .placeholder { position: absolute; color: var(--text-subtle); font-size: 15px; text-align: center; padding: 20px; }
+  .report-flag:focus-visible { outline: none; box-shadow: var(--ring); }
+
+  /* your camera warn overlay (NSFW self-check) */
   .warn-overlay {
     position: absolute; inset: 0; background: rgba(251,95,122,0.94); color: #fff;
     display: none; align-items: center; justify-content: center; text-align: center;
     padding: 24px; font-size: 15px; font-weight: 600; z-index: 5;
   }
+  #localPlaceholder { position: absolute; inset: 0; display: grid; place-items: center; color: var(--text-subtle); font-size: var(--fs-sm); text-align: center; padding: 16px; }
 
-  /* ---- Text chat ---- */
-  .chat { height: 180px; display: flex; flex-direction: column; border-top: 1px solid var(--border); padding: 12px 16px; gap: 8px; background: var(--surface); }
-  .chat-log { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; font-size: 14px; padding-right: 4px; }
-  .chat-msg { max-width: 75%; padding: 7px 12px; border-radius: 14px; line-height: 1.4; overflow-wrap: anywhere; }
-  .chat-msg.me { align-self: flex-end; background: var(--primary); color: #fff; border-bottom-right-radius: 4px; }
-  .chat-msg.them { align-self: flex-start; background: var(--surface-2); color: var(--text); border-bottom-left-radius: 4px; }
-  .chat-msg.sys { align-self: center; background: transparent; color: var(--text-muted); font-size: 12px; text-align: center; }
-  .chat-row { display: flex; gap: 8px; }
-  .chat-row input {
-    flex: 1; background: var(--surface-2); border: 1px solid var(--border); color: var(--text);
-    border-radius: var(--r-md); padding: 11px 14px; font-size: 14px; font-family: inherit;
-    transition: border-color var(--dur), box-shadow var(--dur);
-  }
-  .chat-row input::placeholder { color: var(--text-subtle); }
-  .chat-row input:focus { outline: none; border-color: var(--primary); box-shadow: var(--ring); }
-  .chat-row input:disabled { opacity: 0.5; }
+  /* ---- Bottom row ---- */
+  .bottomrow { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; align-items: stretch; padding: 16px 24px 22px; }
+  .col { display: flex; flex-direction: column; gap: 10px; }
 
-  /* ---- Controls ---- */
-  .controls { padding: 16px; display: flex; gap: 12px; justify-content: center; align-items: center; border-top: 1px solid var(--border); flex-wrap: wrap; background: var(--surface); }
+  .chat-panel {
+    min-height: 130px; flex: 1; background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--r-md); padding: 12px 14px; display: flex; flex-direction: column; gap: 8px;
+    justify-content: flex-end; overflow-y: auto;
+  }
+  #chatEmpty { margin: auto; text-align: center; max-width: 38ch; }
+  .chat-msg { font-size: var(--fs-sm); line-height: 1.4; overflow-wrap: anywhere; }
+  .chat-msg .who { color: var(--text-muted); margin-right: 8px; }
+  .chat-msg.sys { color: var(--text-muted); font-size: var(--fs-xs); text-align: center; }
+  .msg-bar { display: flex; gap: 8px; height: 34px; }
+  .msg-bar .c-input { height: 34px; padding: 0 12px; font-size: var(--fs-sm); border-radius: var(--r-sm); }
+  .msg-bar .c-btn { height: 34px; }
 
-  /* ---- Interests ---- */
-  .interests-area { border-top: 1px solid var(--border); padding: 12px 16px; display: flex; flex-direction: column; gap: 10px; background: var(--surface); }
-  .interests-header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-  .interests-toggle {
-    background: var(--surface-2); border: 1px solid var(--border-strong); color: var(--text);
-    border-radius: var(--r-pill); padding: 8px 15px; font-size: 13px; font-weight: 600; cursor: pointer;
-    font-family: inherit; transition: background var(--dur), border-color var(--dur);
-  }
-  .interests-toggle:hover { background: var(--elevated); }
-  .interests-panel { display: flex; flex-direction: column; gap: 10px; }
-  .interests-panel[hidden] { display: none; }
-  .selected-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-  .tags-label { color: var(--text-muted); font-size: 13px; margin-right: 4px; }
-  .muted-note { color: var(--text-muted); font-size: 13px; }
-  .tag-search {
-    background: var(--surface-2); border: 1px solid var(--border); color: var(--text);
-    border-radius: var(--r-md); padding: 10px 13px; font-size: 14px; font-family: inherit;
-    transition: border-color var(--dur), box-shadow var(--dur);
-  }
-  .tag-search::placeholder { color: var(--text-subtle); }
-  .tag-search:focus { outline: none; border-color: var(--primary); box-shadow: var(--ring); }
-  .tags { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; max-height: 104px; overflow-y: auto; }
-  .tag {
-    background: var(--surface-2); border: 1px solid var(--border); color: var(--text-muted);
-    border-radius: var(--r-pill); padding: 7px 14px; font-size: 13px; font-weight: 500; cursor: pointer;
-    font-family: inherit; transition: background var(--dur), border-color var(--dur), color var(--dur);
-  }
-  .tag:hover { border-color: var(--border-strong); color: var(--text); }
-  .tag.selected { background: var(--primary-tint); border-color: var(--primary); color: #cfc9ff; }
-  .tag.hidden { display: none; }
-  .pill {
-    background: var(--primary); color: #fff; border: none; border-radius: var(--r-pill);
-    padding: 7px 13px; font-size: 13px; font-weight: 600; cursor: pointer; font-family: inherit;
-    transition: background var(--dur);
-  }
-  .pill:hover { background: var(--primary-hover); }
+  .big-btn { flex: 1; min-height: 130px; font-size: var(--fs-xl); }
+  #connectedActions { display: grid; grid-template-columns: 2fr 1fr; gap: 12px; flex: 1; min-height: 130px; }
+  #connectedActions .c-btn { height: 100%; font-size: var(--fs-xl); }
+  .btn-stop { background: var(--danger-tint); color: var(--danger); border-color: var(--danger-tint); box-shadow: none; }
+  .btn-stop:hover { background: var(--danger-tint); }
 
-  /* ---- Buttons ---- */
-  button {
-    border: 1px solid transparent; border-radius: var(--r-md); padding: 12px 22px; font-size: 15px;
-    font-weight: 600; cursor: pointer; color: #fff; font-family: inherit;
-    transition: background var(--dur), border-color var(--dur), color var(--dur), transform var(--dur);
+  .control-row { display: flex; gap: 8px; align-items: center; height: 34px; }
+  .control-row .c-iconbtn { width: 34px; height: 34px; font-size: 15px; }
+  .report-last {
+    margin-left: auto; display: flex; align-items: center; gap: 6px; background: none; border: 0; padding: 0;
+    cursor: pointer; font: var(--fw-medium) var(--fs-xs)/1 var(--font-display); color: var(--text-muted);
   }
-  button:active { transform: translateY(1px); }
-  .btn-start { background: var(--primary); } .btn-start:hover { background: var(--primary-hover); }
-  .btn-next { background: var(--primary); } .btn-next:hover { background: var(--primary-hover); }
-  .btn-report { background: transparent; color: var(--danger); border-color: var(--danger); }
-  .btn-report:hover { background: var(--danger); color: #fff; }
-  .btn-send { background: var(--primary); padding: 11px 18px; } .btn-send:hover { background: var(--primary-hover); }
-  button:disabled { opacity: 0.45; cursor: default; }
-  button:disabled:hover { background: var(--primary); }
-  .btn-report:disabled:hover { background: transparent; color: var(--danger); }
-  .status { color: var(--text-muted); font-size: 14px; min-width: 170px; text-align: center; }
+  .report-last:hover { color: var(--text); }
+
+  /* ---- Toast ---- */
+  #toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 60; }
 
   /* ---- Banned overlay ---- */
   .banned-screen {
-    position: fixed; inset: 0; background: var(--bg); color: #fff; z-index: 50;
+    position: fixed; inset: 0; background: var(--bg); color: var(--text); z-index: 70;
     display: none; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 30px;
   }
   .banned-screen h1 { color: var(--danger); margin-bottom: 10px; letter-spacing: -0.02em; }
   .banned-screen p { color: var(--text-muted); max-width: 420px; line-height: 1.6; }
 
-  @media (max-width: 700px) {
-    .videos { grid-template-columns: 1fr; }
-    .chat { height: 140px; }
+  /* ---- interests modal tag grid ---- */
+  #tags { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start; max-height: 260px; overflow-y: auto; }
+  .tag.hidden { display: none; }
+
+  /* ---- state visibility ---- */
+  .is-hidden { display: none !important; }
+
+  @media (max-width: 760px) {
+    .videorow { grid-template-columns: 1fr; }
+    .bottomrow { grid-template-columns: 1fr; }
   }
-  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
 </head>
-<body>
-  <header>
-    <span class="dot" id="conn-dot"></span>
-    Random Video Chat
-    <span class="spacer"></span>
-    <span class="safety" id="safety">Safety check: off</span>
-  </header>
+<body class="c-root c-stage" data-state="idle">
+<div class="shell">
 
-  <div class="videos">
-    <div class="video-wrap">
-      <video id="remote" autoplay playsinline></video>
-      <div class="placeholder" id="remote-placeholder">No stranger yet</div>
-      <div class="label">Stranger</div>
+  <!-- Status bar -->
+  <div class="statusbar">
+    <div class="brand"><span class="logo"></span><span class="name">Openline</span></div>
+    <div class="center">
+      <span class="c-badge c-badge--online is-hidden" id="connBadge"><span class="c-dot c-dot--live"></span> <span id="connTime">Connected · 00:00</span></span>
     </div>
-    <div class="video-wrap">
+    <div class="right">
+      <span class="shield" id="shield" title="Safety checks on">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--online)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 5 6v5.5c0 4.4 2.9 8.2 7 9.5 4.1-1.3 7-5.1 7-9.5V6l-7-3Z"/><path d="m9 12 2.2 2.2L15.5 10"/></svg>
+      </span>
+      <button class="c-iconbtn" id="settingsBtn" aria-label="Settings" style="width:30px;height:30px;font-size:14px">⚙</button>
+    </div>
+  </div>
+
+  <!-- Video row -->
+  <div class="videorow">
+    <!-- Left tile: idle / searching / stranger -->
+    <div class="c-tile tile" id="leftTile">
+      <!-- idle -->
+      <div class="fill" id="idlePanel">
+        <h2 class="c-h2">Ready when you are.</h2>
+        <p class="c-body c-muted" style="font-size:var(--fs-sm)">You'll be matched with one person. Skip whenever you like — they can't see anything about you but your camera and what you type.</p>
+        <div class="idle-chips" id="idleInterests"><!-- interest + filter chips injected here --></div>
+      </div>
+      <!-- searching -->
+      <div class="fill c-connecting is-hidden" id="searchPanel">
+        <div class="c-spinner c-spinner--lg"></div>
+        <h2 class="c-h2" style="font-size:var(--fs-lg)">Looking for someone…</h2>
+        <p class="c-mono c-muted" style="font-size:var(--fs-xs)">usually under 8s</p>
+      </div>
+      <!-- connected: stranger -->
+      <div class="fill is-hidden" id="remoteWrap">
+        <video id="remote" autoplay playsinline></video>
+        <div id="remotePlaceholder">Connecting…</div>
+        <span class="c-tile__name"><span class="c-dot c-dot--live"></span> <span id="remoteName">Stranger</span></span>
+        <button class="report-flag" id="reportFlag" title="Report" aria-label="Report">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--danger)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 21V4"/><path d="M5 5h11l-1.6 3.6L16 12H5z" fill="var(--danger)" stroke="none"/><path d="M5 4h11l-1.6 4L16 12H5z"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- Right tile: your camera (always) -->
+    <div class="c-tile tile" id="rightTile" style="background:radial-gradient(120% 90% at 50% 25%,#6b7690 0%,#343b4c 60%,#20242f 100%)">
       <video id="local" autoplay playsinline muted></video>
-      <div class="placeholder" id="local-placeholder">Your camera is off</div>
+      <div id="localPlaceholder">Camera off — click "Enable camera"</div>
       <div class="warn-overlay" id="warn-overlay">Inappropriate content detected on your camera. You were disconnected.</div>
-      <div class="label">You</div>
+      <span class="c-tile__name" id="localName">You · this is what they'll see</span>
     </div>
   </div>
 
-  <div class="chat">
-    <div class="chat-log" id="chat-log">
-      <div class="chat-msg sys">Text chat will appear here once you're matched with someone.</div>
+  <!-- Bottom row -->
+  <div class="bottomrow">
+    <!-- Chat -->
+    <div class="col">
+      <div class="chat-panel" id="chatPanel">
+        <p class="c-help" id="chatEmpty">Text chat opens here the moment you're matched. Nothing you type is saved.</p>
+        <div id="chatLog" class="is-hidden" style="display:flex;flex-direction:column;gap:8px;justify-content:flex-end;flex:1"></div>
+      </div>
+      <div class="msg-bar">
+        <input class="c-input" id="chat-input" type="text" placeholder="Message will send once you're matched…" maxlength="500" autocomplete="off" disabled />
+        <button class="c-btn c-btn--secondary c-btn--sm" id="chat-send" disabled>Send</button>
+      </div>
     </div>
-    <div class="chat-row">
-      <input id="chat-input" type="text" placeholder="Say something…" maxlength="500" autocomplete="off" disabled />
-      <button class="btn-send" id="chat-send" disabled>Send</button>
-    </div>
-  </div>
 
-  <div class="interests-area">
-    <div class="interests-header">
-      <button class="interests-toggle" id="interests-toggle" type="button">＋ Interests (optional)</button>
-      <span class="selected-row" id="selected-row"></span>
-    </div>
-    <div class="interests-panel" id="interests-panel" hidden>
-      <input class="tag-search" id="tag-search" type="text" placeholder="Search interests…" autocomplete="off" />
-      <div class="tags" id="tags"></div>
-    </div>
-  </div>
+    <!-- Actions -->
+    <div class="col">
+      <button class="c-btn c-btn--lg big-btn" id="startBtn">Start</button>
+      <button class="c-btn c-btn--secondary c-btn--lg big-btn is-hidden" id="cancelBtn">Cancel search</button>
+      <div id="connectedActions" class="is-hidden">
+        <button class="c-btn c-btn--lg" id="skipBtn">Skip</button>
+        <button class="c-btn c-btn--lg btn-stop" id="stopBtn">Stop</button>
+      </div>
 
-  <div class="controls">
-    <button class="btn-start" id="startBtn">Start</button>
-    <button class="btn-next" id="nextBtn" disabled>Next</button>
-    <button class="btn-report" id="reportBtn" disabled>Report</button>
-    <div class="status" id="status">Pick interests (optional), then click Start.</div>
+      <div class="control-row">
+        <button class="c-iconbtn c-iconbtn--active" id="micBtn" aria-label="Mute microphone" title="Mute microphone">🎙</button>
+        <button class="c-iconbtn c-iconbtn--active" id="camBtn" aria-label="Turn camera off" title="Turn camera off">📷</button>
+        <span class="c-help" id="idleRules" style="margin-left:4px">18+ only. No nudity or harassment — report anyone, we read every one.</span>
+        <span class="c-help is-hidden" id="connectedHelp" style="margin-left:4px">Skip is instant — no goodbye needed.</span>
+        <button class="report-last is-hidden" id="reportLast">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="var(--danger)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 21V4"/><path d="M5 4h11l-1.6 4L16 12H5z"/></svg>
+          Report last
+        </button>
+        <button class="c-btn c-btn--secondary c-btn--sm is-hidden" id="editInterests">Edit interests</button>
+      </div>
+    </div>
   </div>
+</div>
 
-  <div class="banned-screen" id="banned-screen">
-    <h1>You've been banned</h1>
-    <p>You were reported for inappropriate behavior and can no longer use this service.</p>
+<!-- Report modal -->
+<div class="c-modal is-hidden" id="report-modal" role="dialog" aria-modal="true" aria-labelledby="reportTitle">
+  <div class="c-modal__backdrop" id="reportBackdrop"></div>
+  <div class="c-modal__sheet">
+    <div>
+      <h3 class="c-h3" id="reportTitle" style="font-size:var(--fs-md)">Report</h3>
+      <p class="c-body c-muted" style="font-size:var(--fs-sm)">They're disconnected right away and you won't be matched again. A moderator reviews this, usually within the hour.</p>
+    </div>
+    <div style="display:flex;flex-wrap:wrap;gap:8px" id="reasonChips">
+      <button class="c-chip" data-reason="Nudity">Nudity</button>
+      <button class="c-chip" data-reason="Harassment">Harassment</button>
+      <button class="c-chip" data-reason="Under 18">Under 18</button>
+      <button class="c-chip" data-reason="Spam or scam">Spam or scam</button>
+      <button class="c-chip" data-reason="Something else">Something else</button>
+    </div>
+    <div class="c-field">
+      <label>Anything to add? <span class="c-muted" style="font-weight:400">optional</span></label>
+      <textarea class="c-textarea" id="reportNote" rows="2" placeholder="What happened?"></textarea>
+    </div>
+    <div class="c-modal__actions">
+      <button class="c-btn c-btn--ghost" id="reportCancel">Cancel</button>
+      <button class="c-btn c-btn--danger-solid" id="reportSubmit">Report &amp; block</button>
+    </div>
   </div>
+</div>
+
+<!-- Interests modal -->
+<div class="c-modal is-hidden" id="interests-modal" role="dialog" aria-modal="true" aria-labelledby="interestsTitle">
+  <div class="c-modal__backdrop" id="interestsBackdrop"></div>
+  <div class="c-modal__sheet" style="width:min(520px,100%)">
+    <div><h3 class="c-h3" id="interestsTitle" style="font-size:var(--fs-md)">Your interests</h3><p class="c-body c-muted" style="font-size:var(--fs-sm)">Pick a few — we'll try to match you with someone who shares them.</p></div>
+    <input class="c-input" id="tag-search" type="text" placeholder="Search interests…" autocomplete="off" />
+    <div id="tags"></div>
+    <div class="c-modal__actions"><button class="c-btn" id="interestsDone">Done</button></div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="c-toast c-toast--success is-hidden" id="toast"><span class="c-toast__dot"></span> <span id="toastText"></span></div>
+
+<!-- Banned overlay -->
+<div class="banned-screen" id="banned-screen">
+  <h1>You've been banned</h1>
+  <p>You were reported for inappropriate behavior and can no longer use this service.</p>
+</div>
 
 <canvas id="sampler" width="224" height="224" style="display:none"></canvas>
 
@@ -244,33 +272,95 @@ const EXPLICIT_THRESHOLD = 0.60;
 const SEXY_THRESHOLD = 0.85;
 const TRIPS_BEFORE_ACTION = 2;
 const MAX_STRIKES = 3;
+const REPORT_LAST_MS = 10000;   // how long "Report last" stays available after a skip
 
 const $ = (id) => document.getElementById(id);
-const startBtn = $('startBtn'), nextBtn = $('nextBtn'), reportBtn = $('reportBtn');
-const statusEl = $('status'), connDot = $('conn-dot'), safetyBadge = $('safety');
-const localVideo = $('local'), remoteVideo = $('remote');
-const localPlaceholder = $('local-placeholder'), remotePlaceholder = $('remote-placeholder');
-const warnOverlay = $('warn-overlay'), bannedScreen = $('banned-screen'), sampler = $('sampler');
-const tagsEl = $('tags'), tagSearch = $('tag-search'), selectedRow = $('selected-row');
-const interestsToggle = $('interests-toggle'), interestsPanel = $('interests-panel');
-const chatLog = $('chat-log'), chatInput = $('chat-input'), chatSend = $('chat-send');
+const els = {
+  connBadge: $('connBadge'), connTime: $('connTime'), shield: $('shield'),
+  leftTile: $('leftTile'), idlePanel: $('idlePanel'), searchPanel: $('searchPanel'),
+  remoteWrap: $('remoteWrap'), remote: $('remote'), remotePlaceholder: $('remotePlaceholder'),
+  remoteName: $('remoteName'), reportFlag: $('reportFlag'),
+  local: $('local'), localPlaceholder: $('localPlaceholder'), localName: $('localName'), warnOverlay: $('warn-overlay'),
+  chatPanel: $('chatPanel'), chatEmpty: $('chatEmpty'), chatLog: $('chatLog'),
+  chatInput: $('chat-input'), chatSend: $('chat-send'),
+  startBtn: $('startBtn'), cancelBtn: $('cancelBtn'), connectedActions: $('connectedActions'),
+  skipBtn: $('skipBtn'), stopBtn: $('stopBtn'),
+  micBtn: $('micBtn'), camBtn: $('camBtn'),
+  idleRules: $('idleRules'), connectedHelp: $('connectedHelp'), reportLast: $('reportLast'), editInterests: $('editInterests'),
+  idleInterests: $('idleInterests'),
+  reportModal: $('report-modal'), reportTitle: $('reportTitle'), reasonChips: $('reasonChips'),
+  reportNote: $('reportNote'), reportCancel: $('reportCancel'), reportSubmit: $('reportSubmit'), reportBackdrop: $('reportBackdrop'),
+  interestsModal: $('interests-modal'), tagSearch: $('tag-search'), tags: $('tags'),
+  interestsDone: $('interestsDone'), interestsBackdrop: $('interestsBackdrop'),
+  toast: $('toast'), toastText: $('toastText'),
+  banned: $('banned-screen'), sampler: $('sampler'), settingsBtn: $('settingsBtn'),
+};
 
 let localStream = null, ws = null, pc = null, isInitiator = false;
 let inCall = false, nsfwModel = null, moderationState = 'off';
 let tripCount = 0, strikes = 0, moderationTimer = null;
+let state = 'idle';                 // 'idle' | 'searching' | 'connected'
+let callStart = 0, callTimer = null;
+let peerName = 'Stranger', lastPeerName = 'Stranger';
+let reportLastTimer = null, reportTarget = 'current';
 
-function setStatus(t) { statusEl.textContent = t; }
+const show = (el, on) => el.classList.toggle('is-hidden', !on);
 
-function updateSafetyBadge() {
-  safetyBadge.className = 'safety ' + moderationState;
-  safetyBadge.textContent =
-    moderationState === 'on' ? 'Safety check: on'
-    : moderationState === 'loading' ? 'Safety check: loading…'
-    : 'Safety check: off';
+// --- State machine --------------------------------------------------------
+function setState(s) {
+  state = s;
+  document.body.dataset.state = s;
+  show(els.idlePanel, s === 'idle');
+  show(els.searchPanel, s === 'searching');
+  show(els.remoteWrap, s === 'connected');
+  els.leftTile.style.background = s === 'connected' ? '#12151d' : 'var(--surface)';
+
+  show(els.chatEmpty, s !== 'connected');
+  show(els.chatLog, s === 'connected');
+  setChatEnabled(s === 'connected');
+
+  show(els.startBtn, s === 'idle');
+  show(els.cancelBtn, s === 'searching');
+  show(els.connectedActions, s === 'connected');
+
+  show(els.idleRules, s === 'idle');
+  show(els.connectedHelp, s === 'connected');
+  show(els.editInterests, s === 'searching');
+  show(els.connBadge, s === 'connected');
+
+  // "Report last" only lives in searching; hide it if we leave that state
+  if (s !== 'searching') { show(els.reportLast, false); clearTimeout(reportLastTimer); }
 }
 
-// Preset interest tags everyone chooses from. Edit this list freely — new tags
-// appear automatically and the search box filters them.
+function startReportLastWindow(name) {
+  lastPeerName = name || 'Stranger';
+  clearTimeout(reportLastTimer);
+  show(els.reportLast, true);
+  reportLastTimer = setTimeout(() => show(els.reportLast, false), REPORT_LAST_MS);
+}
+
+// --- Shield ---------------------------------------------------------------
+function updateShield() {
+  const stroke = moderationState === 'on' ? 'var(--online)'
+    : moderationState === 'loading' ? 'var(--warning)' : 'var(--text-subtle)';
+  const bg = moderationState === 'on' ? 'var(--online-tint)'
+    : moderationState === 'loading' ? 'var(--warning-tint)' : 'var(--surface-2)';
+  els.shield.style.background = bg;
+  els.shield.querySelector('svg').setAttribute('stroke', stroke);
+  els.shield.title = moderationState === 'on' ? 'Safety checks on'
+    : moderationState === 'loading' ? 'Safety checks loading…' : 'Safety checks off';
+}
+
+// --- Toast ----------------------------------------------------------------
+let toastTimer = null;
+function toast(text) {
+  els.toastText.textContent = text;
+  show(els.toast, true);
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => show(els.toast, false), 3500);
+}
+
+// --- Interests ------------------------------------------------------------
 const INTEREST_OPTIONS = [
   'Gaming','Video Games','Esports','Minecraft','Fortnite','Roblox','League of Legends','Valorant','Call of Duty','Among Us',
   'Music','Rock','Pop','Hip Hop','Rap','K-Pop','EDM','Jazz','Classical','Metal','Country','Guitar','Piano','Singing','Producing',
@@ -285,203 +375,201 @@ const INTEREST_OPTIONS = [
   'Nature','Animals','Dogs','Cats','Gardening','Fishing','Camping','Astrology',
   'Dancing','Languages','Memes','Podcasts','Board Games','Chess','DIY','Investing','Volunteering','Meditation'
 ];
-
-const chipByKey = {};
-const labelByKey = {};
+const labelByKey = {}, chipByKey = {};
 const selected = new Set();
-
 INTEREST_OPTIONS.slice().sort((a, b) => a.localeCompare(b)).forEach((label) => {
   const key = label.toLowerCase();
   labelByKey[key] = label;
   const b = document.createElement('button');
-  b.type = 'button';
-  b.className = 'tag';
-  b.textContent = label;
-  b.dataset.interest = key;
+  b.type = 'button'; b.className = 'c-chip tag'; b.textContent = label; b.dataset.interest = key;
   b.addEventListener('click', () => toggleInterest(key));
-  tagsEl.appendChild(b);
+  els.tags.appendChild(b);
   chipByKey[key] = b;
 });
-
 function toggleInterest(key) {
   if (selected.has(key)) selected.delete(key); else selected.add(key);
-  if (chipByKey[key]) chipByKey[key].classList.toggle('selected', selected.has(key));
-  renderSelected();
+  if (chipByKey[key]) chipByKey[key].classList.toggle('is-selected', selected.has(key));
+  renderIdleInterests();
 }
-
-// Show the picked interests as removable pills, so they stay visible even when
-// the search box has filtered them out of the list below.
-function renderSelected() {
-  [...selectedRow.querySelectorAll('.pill')].forEach((p) => p.remove());
-  selected.forEach((key) => {
-    const pill = document.createElement('button');
-    pill.type = 'button';
-    pill.className = 'pill';
-    pill.textContent = (labelByKey[key] || key) + '  ✕';
-    pill.addEventListener('click', () => toggleInterest(key));
-    selectedRow.appendChild(pill);
-  });
-}
-
-// Show/hide the interest picker so the tag list isn't always taking up space.
-interestsToggle.addEventListener('click', () => {
-  const opening = interestsPanel.hasAttribute('hidden');
-  if (opening) {
-    interestsPanel.removeAttribute('hidden');
-    interestsToggle.textContent = '－ Interests';
-    tagSearch.focus();
-  } else {
-    interestsPanel.setAttribute('hidden', '');
-    interestsToggle.textContent = '＋ Interests (optional)';
-  }
-});
-
-// Filter the tag list as the user types in the search box.
-tagSearch.addEventListener('input', () => {
-  const q = tagSearch.value.trim().toLowerCase();
-  Object.values(chipByKey).forEach((b) => {
-    b.classList.toggle('hidden', q !== '' && !b.dataset.interest.includes(q));
-  });
-});
-
-// The interests you send are the tags you've selected.
 function getInterests() { return [...selected]; }
 
-// --- Chat helpers ---------------------------------------------------------
-// Note: uses textContent (never innerHTML) so messages can't inject HTML.
-function addChat(text, kind) {
-  const div = document.createElement('div');
-  div.className = 'chat-msg ' + kind;
-  div.textContent = text;
-  chatLog.appendChild(div);
-  chatLog.scrollTop = chatLog.scrollHeight;
+// The idle tile shows selected interests as removable chips, plus "+ interests"
+// and the (cosmetic for now) country/language filters.
+function renderIdleInterests() {
+  els.idleInterests.innerHTML = '';
+  selected.forEach((key) => {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'c-chip is-selected';
+    b.textContent = (labelByKey[key] || key) + ' ';
+    const x = document.createElement('span'); x.className = 'c-chip__x'; x.textContent = '×';
+    b.appendChild(x);
+    b.addEventListener('click', () => toggleInterest(key));
+    els.idleInterests.appendChild(b);
+  });
+  const add = document.createElement('button');
+  add.type = 'button'; add.className = 'c-chip'; add.textContent = '+ interests';
+  add.addEventListener('click', openInterests);
+  els.idleInterests.appendChild(add);
+  // Cosmetic filters (not wired to matching yet).
+  ['Anywhere ▾', 'English ▾'].forEach((t) => {
+    const c = document.createElement('button');
+    c.type = 'button'; c.className = 'c-chip'; c.textContent = t;
+    c.title = 'Filter coming soon';
+    els.idleInterests.appendChild(c);
+  });
 }
-function clearChat() { chatLog.innerHTML = ''; }
+renderIdleInterests();
+
+function openInterests() { show(els.interestsModal, true); els.tagSearch.focus(); }
+function closeInterests() {
+  show(els.interestsModal, false);
+  if (state === 'searching' && ws && ws.readyState === ws.OPEN) {
+    ws.send(JSON.stringify({ type: 'ready', interests: getInterests() }));  // re-queue with new interests
+  }
+}
+els.tagSearch.addEventListener('input', () => {
+  const q = els.tagSearch.value.trim().toLowerCase();
+  Object.values(chipByKey).forEach((b) => b.classList.toggle('hidden', q !== '' && !b.dataset.interest.includes(q)));
+});
+els.interestsDone.addEventListener('click', closeInterests);
+els.interestsBackdrop.addEventListener('click', closeInterests);
+els.editInterests.addEventListener('click', openInterests);
+els.settingsBtn.addEventListener('click', openInterests);   // gear opens preferences for now
+
+// --- Chat -----------------------------------------------------------------
+function addChat(text, kind, who) {
+  const div = document.createElement('div');
+  div.className = 'chat-msg ' + (kind === 'sys' ? 'sys' : '');
+  if (kind === 'sys') { div.textContent = text; }
+  else {
+    const w = document.createElement('span'); w.className = 'who'; w.textContent = who;
+    div.appendChild(w); div.appendChild(document.createTextNode(text));
+  }
+  els.chatLog.appendChild(div);
+  els.chatLog.scrollTop = els.chatLog.scrollHeight;
+}
+function clearChat() { els.chatLog.innerHTML = ''; }
 function setChatEnabled(on) {
-  chatInput.disabled = !on;
-  chatSend.disabled = !on;
-  if (on) chatInput.focus();
+  els.chatInput.disabled = !on;
+  els.chatSend.disabled = !on;
+  els.chatInput.placeholder = on ? ('Message ' + peerName + '…') : 'Message will send once you’re matched…';
+  if (on) els.chatInput.focus();
 }
 
-// --- Start ----------------------------------------------------------------
-startBtn.onclick = async () => {
+// --- Local media ----------------------------------------------------------
+async function initLocalMedia() {
   try {
-    // Ask for a wide 16:9 capture (like Discord) so we use the camera's full
-    // field of view instead of a cropped, squarish default. "ideal" lets the
-    // browser fall back gracefully if the camera can't do exactly this.
     localStream = await navigator.mediaDevices.getUserMedia({
-      video: {
-        width: { ideal: 1280 },
-        height: { ideal: 720 },
-        aspectRatio: { ideal: 16 / 9 }
-      },
+      video: { width: { ideal: 1280 }, height: { ideal: 720 }, aspectRatio: { ideal: 16 / 9 } },
       audio: true
     });
   } catch {
-    setStatus('Could not access camera/mic. Please allow permission.');
-    return;
+    els.localPlaceholder.textContent = 'Could not access camera/mic. Allow permission, then click Start.';
+    show(els.localPlaceholder, true);
+    return false;
   }
-  localVideo.srcObject = localStream;
-  localPlaceholder.style.display = 'none';
-  startBtn.disabled = true;
-  nextBtn.disabled = false;
-
+  els.local.srcObject = localStream;
+  show(els.localPlaceholder, false);
+  syncMediaButtons();
   initModeration();
-  connectToServer();
-};
+  return true;
+}
+function syncMediaButtons() {
+  const a = localStream && localStream.getAudioTracks()[0];
+  const v = localStream && localStream.getVideoTracks()[0];
+  els.micBtn.classList.toggle('c-iconbtn--active', !!(a && a.enabled));
+  els.camBtn.classList.toggle('c-iconbtn--active', !!(v && v.enabled));
+}
+els.micBtn.addEventListener('click', () => {
+  const t = localStream && localStream.getAudioTracks()[0]; if (!t) return;
+  t.enabled = !t.enabled; syncMediaButtons();
+});
+els.camBtn.addEventListener('click', () => {
+  const t = localStream && localStream.getVideoTracks()[0]; if (!t) return;
+  t.enabled = !t.enabled; syncMediaButtons();
+});
 
+// --- Moderation (NSFW self-camera check) ----------------------------------
 async function initModeration() {
-  moderationState = 'loading'; updateSafetyBadge();
+  if (moderationState === 'on' || moderationState === 'loading') return;
+  moderationState = 'loading'; updateShield();
   try {
-    if (typeof nsfwjs === 'undefined' || typeof tf === 'undefined') {
-      throw new Error('Safety libraries did not load (CDN blocked?).');
-    }
+    if (typeof nsfwjs === 'undefined' || typeof tf === 'undefined') throw new Error('Safety libraries did not load.');
     nsfwModel = await nsfwjs.load();
     moderationState = 'on';
-    startModerationLoop();
+    if (moderationTimer) clearInterval(moderationTimer);
+    moderationTimer = setInterval(checkOwnCamera, SAMPLE_MS);
   } catch (err) {
     console.warn('Moderation disabled:', err);
     nsfwModel = null; moderationState = 'off';
   }
-  updateSafetyBadge();
+  updateShield();
 }
-
-function startModerationLoop() {
-  if (moderationTimer) clearInterval(moderationTimer);
-  moderationTimer = setInterval(checkOwnCamera, SAMPLE_MS);
-}
-
 async function checkOwnCamera() {
   if (!nsfwModel || !inCall || !localStream) return;
   try {
-    const ctx = sampler.getContext('2d');
-    ctx.drawImage(localVideo, 0, 0, sampler.width, sampler.height);
-    const preds = await nsfwModel.classify(sampler);
-    const s = {};
-    preds.forEach((p) => { s[p.className] = p.probability; });
+    const ctx = els.sampler.getContext('2d');
+    ctx.drawImage(els.local, 0, 0, els.sampler.width, els.sampler.height);
+    const preds = await nsfwModel.classify(els.sampler);
+    const s = {}; preds.forEach((p) => { s[p.className] = p.probability; });
     const explicit = (s['Porn'] || 0) + (s['Hentai'] || 0);
     const trip = explicit >= EXPLICIT_THRESHOLD || (s['Sexy'] || 0) >= SEXY_THRESHOLD;
     if (trip) { tripCount++; if (tripCount >= TRIPS_BEFORE_ACTION) handleSelfViolation(); }
     else { tripCount = 0; }
   } catch (err) { console.warn('Safety check error:', err); }
 }
-
 function handleSelfViolation() {
   tripCount = 0; strikes++;
-  endCall();
-  warnOverlay.style.display = 'flex';
-  setTimeout(() => { warnOverlay.style.display = 'none'; }, 4000);
+  teardownCall();
+  if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: 'stop' }));
+  setState('idle');
+  els.warnOverlay.style.display = 'flex';
+  setTimeout(() => { els.warnOverlay.style.display = 'none'; }, 4000);
   if (strikes >= MAX_STRIKES) {
-    setStatus('Too many violations. Please reload to continue.');
-    nextBtn.disabled = true; reportBtn.disabled = true;
+    els.startBtn.disabled = true;
+    els.idleRules.textContent = 'Too many safety violations. Reload the page to continue.';
     if (ws) ws.close();
-    return;
   }
-  setStatus('You were disconnected for inappropriate content. Click Next to continue.');
 }
 
 // --- Server connection ----------------------------------------------------
 function connectToServer() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   ws = new WebSocket(`${proto}://${location.host}`);
-
-  ws.onopen = () => {
-    connDot.classList.add('live');
-    setStatus('Looking for a stranger...');
-    ws.send(JSON.stringify({ type: 'ready', interests: getInterests() }));
-  };
-  ws.onclose = () => { connDot.classList.remove('live'); };
-
+  ws.onopen = () => ws.send(JSON.stringify({ type: 'ready', interests: getInterests() }));
   ws.onmessage = async (event) => {
     const msg = JSON.parse(event.data);
     switch (msg.type) {
       case 'waiting':
-        setStatus('Waiting for someone to join...');
+        if (state !== 'connected') setState('searching');
         break;
       case 'matched':
         isInitiator = msg.initiator;
-        setStatus('Stranger found! Connecting...');
+        peerName = 'Stranger';
+        els.remoteName.textContent = peerName;
+        setState('connected');
+        startTimer();
         clearChat();
         if (msg.shared && msg.shared.length) addChat('You both like: ' + msg.shared.join(', '), 'sys');
         else addChat('Matched! Say hi.', 'sys');
-        setChatEnabled(true);
+        els.remotePlaceholder.style.display = 'grid';
         await startCall();
         break;
       case 'signal':
         await handleSignal(msg.data);
         break;
       case 'chat':
-        addChat(msg.text, 'them');
+        addChat(msg.text, 'them', peerName);
         break;
       case 'partner-left':
-        setStatus('Stranger left. Finding a new one...');
         addChat('Stranger disconnected.', 'sys');
-        setChatEnabled(false);
-        endCall();
+        teardownCall();
+        setState('searching');
+        startReportLastWindow(peerName);
         ws.send(JSON.stringify({ type: 'ready', interests: getInterests() }));
         break;
       case 'report-ack':
-        setStatus('Thanks — that person was reported and removed.');
+        toast('Reported. You won’t be matched with them again.');
         break;
       case 'banned':
         showBanned();
@@ -491,37 +579,31 @@ function connectToServer() {
 }
 
 function showBanned() {
-  inCall = false;
+  teardownCall();
   if (moderationTimer) clearInterval(moderationTimer);
-  if (pc) { pc.close(); pc = null; }
   if (ws) ws.close();
   if (localStream) localStream.getTracks().forEach((t) => t.stop());
-  bannedScreen.style.display = 'flex';
+  els.banned.style.display = 'flex';
 }
 
 // --- WebRTC ---------------------------------------------------------------
 async function startCall() {
   pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
   localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
-
   pc.ontrack = (event) => {
-    remoteVideo.srcObject = event.streams[0];
-    remotePlaceholder.style.display = 'none';
+    els.remote.srcObject = event.streams[0];
+    els.remotePlaceholder.style.display = 'none';
     inCall = true;
-    reportBtn.disabled = false;
-    setStatus('Connected! Say hi.');
   };
   pc.onicecandidate = (event) => {
     if (event.candidate) ws.send(JSON.stringify({ type: 'signal', data: { candidate: event.candidate } }));
   };
-
   if (isInitiator) {
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
     ws.send(JSON.stringify({ type: 'signal', data: { sdp: pc.localDescription } }));
   }
 }
-
 async function handleSignal(data) {
   if (!pc) return;
   if (data.sdp) {
@@ -535,47 +617,101 @@ async function handleSignal(data) {
     try { await pc.addIceCandidate(new RTCIceCandidate(data.candidate)); } catch {}
   }
 }
-
-function endCall() {
+function teardownCall() {
   inCall = false;
-  reportBtn.disabled = true;
-  setChatEnabled(false);
+  stopTimer();
   if (pc) { pc.close(); pc = null; }
-  remoteVideo.srcObject = null;
-  remotePlaceholder.style.display = 'block';
+  els.remote.srcObject = null;
 }
 
-// --- Buttons + chat sending ----------------------------------------------
-nextBtn.onclick = () => {
-  setStatus('Finding a new stranger...');
-  clearChat();
-  endCall();
+// --- Connected timer ------------------------------------------------------
+function startTimer() {
+  callStart = Date.now();
+  stopTimer();
+  const tick = () => {
+    const secs = Math.floor((Date.now() - callStart) / 1000);
+    const mm = String(Math.floor(secs / 60)).padStart(2, '0');
+    const ss = String(secs % 60).padStart(2, '0');
+    els.connTime.textContent = `Connected · ${mm}:${ss}`;
+  };
+  tick();
+  callTimer = setInterval(tick, 1000);
+}
+function stopTimer() { if (callTimer) { clearInterval(callTimer); callTimer = null; } }
+
+// --- Buttons --------------------------------------------------------------
+els.startBtn.addEventListener('click', async () => {
+  if (!localStream && !(await initLocalMedia())) return;
+  setState('searching');
+  connectToServer();
+});
+els.cancelBtn.addEventListener('click', () => {
+  if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: 'stop' }));
+  setState('idle');
+});
+els.skipBtn.addEventListener('click', () => {
+  const left = peerName;
+  teardownCall(); clearChat();
+  setState('searching');
   ws.send(JSON.stringify({ type: 'next', interests: getInterests() }));
-};
+  startReportLastWindow(left);
+});
+els.stopBtn.addEventListener('click', () => {
+  teardownCall(); clearChat();
+  if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: 'stop' }));
+  setState('idle');
+});
 
-reportBtn.onclick = () => {
-  if (!inCall) return;
-  setStatus('Reporting...');
-  ws.send(JSON.stringify({ type: 'report' }));
-  clearChat();
-  endCall();
-  ws.send(JSON.stringify({ type: 'ready', interests: getInterests() }));
-};
-
+// --- Chat sending ---------------------------------------------------------
 function sendChat() {
-  const text = chatInput.value.trim();
-  // Chat works as soon as you're matched (it goes through the server), even
-  // before the video link finishes connecting — so gate on the input being
-  // enabled, not on the video call state.
-  if (!text || chatInput.disabled || !ws) return;
+  const text = els.chatInput.value.trim();
+  if (!text || els.chatInput.disabled || !ws) return;
   ws.send(JSON.stringify({ type: 'chat', text }));
-  addChat(text, 'me');
-  chatInput.value = '';
+  addChat(text, 'me', 'You');
+  els.chatInput.value = '';
 }
-chatSend.onclick = sendChat;
-chatInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); sendChat(); } });
+els.chatSend.addEventListener('click', sendChat);
+els.chatInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); sendChat(); } });
 
-updateSafetyBadge();
+// --- Report modal ---------------------------------------------------------
+let reportReason = null;
+els.reasonChips.querySelectorAll('.c-chip').forEach((chip) => {
+  chip.addEventListener('click', () => {
+    els.reasonChips.querySelectorAll('.c-chip').forEach((c) => c.classList.remove('is-selected'));
+    chip.classList.add('is-selected');
+    reportReason = chip.dataset.reason;
+  });
+});
+function openReport(target, name) {
+  reportTarget = target;
+  reportReason = null;
+  els.reasonChips.querySelectorAll('.c-chip').forEach((c) => c.classList.remove('is-selected'));
+  els.reportNote.value = '';
+  els.reportTitle.textContent = 'Report ' + (name || 'this person');
+  show(els.reportModal, true);
+}
+function closeReport() { show(els.reportModal, false); }
+els.reportFlag.addEventListener('click', () => openReport('current', peerName));
+els.reportLast.addEventListener('click', () => openReport('last', lastPeerName));
+els.reportCancel.addEventListener('click', closeReport);
+els.reportBackdrop.addEventListener('click', closeReport);
+els.reportSubmit.addEventListener('click', () => {
+  const payload = { reason: reportReason || 'unspecified', note: els.reportNote.value.trim().slice(0, 500) };
+  if (reportTarget === 'current') {
+    ws.send(JSON.stringify({ type: 'report', ...payload }));
+    teardownCall(); clearChat();
+    setState('searching');       // server re-queues the reporter
+  } else {
+    if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: 'report-last', ...payload }));
+    show(els.reportLast, false);
+  }
+  closeReport();
+});
+
+// --- Boot -----------------------------------------------------------------
+setState('idle');
+updateShield();
+initLocalMedia();   // request camera up front so the idle preview is live
 </script>
 </body>
 </html>
