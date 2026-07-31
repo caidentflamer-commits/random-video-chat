@@ -120,9 +120,31 @@
   /* ---- state visibility ---- */
   .is-hidden { display: none !important; }
 
-  @media (max-width: 760px) {
-    .videorow { grid-template-columns: 1fr; }
-    .bottomrow { grid-template-columns: 1fr; }
+  /* Keep modals usable on short screens */
+  .c-modal__sheet { max-height: 90dvh; overflow: auto; }
+
+  /* ---- Mobile (portrait phones / small tablets) ---- */
+  @media (max-width: 720px) {
+    .statusbar { padding: 8px 14px; }
+
+    /* One big video; your camera becomes a picture-in-picture over it. */
+    .videorow { grid-template-columns: 1fr; position: relative; padding: 10px 12px 0; }
+    #rightTile {
+      position: absolute; right: 18px; bottom: 16px; z-index: 4;
+      width: 30vw; max-width: 128px; height: 40vw; max-height: 168px;
+      border: 2px solid var(--surface); border-radius: var(--r-md); box-shadow: var(--shadow-lg);
+    }
+    #rightTile .c-tile__name, #rightTile #localPlaceholder { display: none; }
+    #idlePanel { justify-content: flex-start; padding: 22px 20px; gap: 10px; }
+    #idlePanel .c-h2 { font-size: var(--fs-lg); }
+
+    /* Stack chat over the actions; the big button sits at the thumb-friendly bottom. */
+    .bottomrow { grid-template-columns: 1fr; gap: 10px; padding: 10px 12px 14px; }
+    .col { gap: 8px; }
+    .chat-panel { height: 82px; }
+    .big-btn, #connectedActions { flex: none; height: 54px; }
+    #connectedActions .c-btn { font-size: var(--fs-lg); }
+    .control-row { height: auto; flex-wrap: wrap; }
   }
 </style>
 </head>
