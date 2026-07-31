@@ -1,15 +1,23 @@
 /*
- * Random Video Chat — signaling + matchmaking server (with basic moderation)
+ * Openline — signaling + matchmaking server (rooms, mesh, moderation)
  * -------------------------------------------------------------------------
  * Jobs:
  *   1. Serve the frontend (public/ folder) over HTTP.
- *   2. Pair up waiting users and relay the WebRTC handshake between a pair.
- *   3. Basic moderation: let a user REPORT their partner, which bans that
- *      partner (by IP) and disconnects them so they can't reconnect.
+ *   2. Matchmake and relay WebRTC signaling for both solo 1-on-1 chat AND
+ *      "Party Mode" (two friends team up, then meet strangers together).
+ *   3. Basic moderation: a user can REPORT someone, which bans them by IP.
  *
- * NOTE: bans are kept in memory, so they reset if the server restarts.
- * That's fine for a small/testing setup. A real launch would store bans in
- * a database — see README's "what's next".
+ * Model:
+ *   - Every socket has a stable `peerId`.
+ *   - A PARTY is a durable group of 1 (solo) or 2 (friends joined by code).
+ *   - A SESSION is two parties matched together (2–4 people total). Everyone
+ *     in a session is a full WebRTC mesh (a direct peer connection per pair).
+ *   - Matchmaking pairs PARTIES: any two fit (1+1, 2+1, 2+2 all ≤ 4).
+ *   - "Next" dissolves the session; each party returns to matchmaking intact.
+ *   - Solo-vs-solo is just a 2-person mesh — identical to the old 1-on-1 flow.
+ *
+ * Bans are kept in memory (reset on restart) — fine for a small setup.
+ * STUN-only, WebRTC mesh, no media server (SFU). Max 4 per room by design.
  */
 
 const http = require('http');
@@ -22,11 +30,7 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 
 // ---- 1. Serve the frontend files -----------------------------------------
 
-const MIME = {
-  '.html': 'text/html',
-  '.js': 'text/javascript',
-  '.css': 'text/css',
-};
+const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css' };
 
 const server = http.createServer((req, res) => {
   let urlPath = req.url.split('?')[0];
@@ -53,227 +57,308 @@ const server = http.createServer((req, res) => {
 
 const wss = new WebSocketServer({ server });
 
-let waiting = [];                 // users online but not yet paired
-const partners = new Map();       // socket -> partner socket
-const bannedIps = new Set();      // IPs that reported partners banned
+let searching = [];                 // parties currently in matchmaking (not in a session)
+const partiesByCode = new Map();    // join code -> party awaiting a second member
+const bannedIps = new Set();
 let nextId = 1;
 
-// Best-effort client IP. On hosts like Render the real IP is in a header.
+const FALLBACK_MS = 6000;           // pair long-waiting parties regardless of interests
+const REPORT_LAST_GRACE_MS = 30000; // how long a just-left stranger can still be reported
+const RECENT_COOLDOWN_MS = 8000;    // don't instantly re-match the party you just skipped
+
+// ---- small utilities ------------------------------------------------------
+
 function getClientIp(req) {
   const fwd = req.headers['x-forwarded-for'];
   if (fwd) return fwd.split(',')[0].trim();
   return req.socket.remoteAddress || 'unknown';
 }
-
 function send(socket, obj) {
   if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(obj));
 }
-
-// Clean up a user's interest list: lowercase, trimmed, de-duplicated, capped.
 function normalizeInterests(list) {
   if (!Array.isArray(list)) return [];
-  return [...new Set(
-    list.map((s) => String(s).trim().toLowerCase()).filter(Boolean)
-  )].slice(0, 10);
+  return [...new Set(list.map((s) => String(s).trim().toLowerCase()).filter(Boolean))].slice(0, 10);
 }
-
 function intersect(a, b) {
   if (!a || !b) return [];
   const setB = new Set(b);
   return a.filter((x) => setB.has(x));
 }
-
-// A country/language preference: empty, 'any' or 'anywhere' all mean "no filter".
-function normPref(v) {
-  return typeof v === 'string' ? v.trim().toLowerCase() : '';
-}
+// A region/language preference: empty, 'any' or 'anywhere' all mean "no filter".
+function normPref(v) { return typeof v === 'string' ? v.trim().toLowerCase() : ''; }
 function isAnyPref(v) { return !v || v === 'any' || v === 'anywhere'; }
-
-// Two users may be matched only if their language AND country prefs are
-// compatible: either side is "any/anywhere", or they picked the same value.
+// Two parties may match only if language AND region are compatible.
 function compatible(a, b) {
   const langOK = isAnyPref(a.language) || isAnyPref(b.language) || a.language === b.language;
-  const countryOK = isAnyPref(a.country) || isAnyPref(b.country) || a.country === b.country;
-  return langOK && countryOK;
+  const regionOK = isAnyPref(a.country) || isAnyPref(b.country) || a.country === b.country;
+  return langOK && regionOK;
+}
+function normalizePrefs(msg) {
+  return { interests: normalizeInterests(msg.interests), country: normPref(msg.country), language: normPref(msg.language) };
 }
 
-function pair(a, b) {
-  partners.set(a, b);
-  partners.set(b, a);
-  const shared = intersect(a.interests, b.interests);
-  send(a, { type: 'matched', initiator: true, shared });
-  send(b, { type: 'matched', initiator: false, shared });
-  console.log(`Paired #${a.id} <-> #${b.id}${shared.length ? ' (shared: ' + shared.join(', ') + ')' : ''}`);
+// ---- parties, rooms & mesh -----------------------------------------------
+
+function makeCode() {
+  let c;
+  do { c = ''; for (let i = 0; i < 4; i++) c += 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[Math.floor(Math.random() * 32)]; }
+  while (partiesByCode.has(c));
+  return c;
+}
+function newParty(socket) {
+  const p = { id: nextId++, code: null, members: [socket], prefs: { interests: [], country: '', language: '' }, session: null, recentlyLeft: {} };
+  socket.party = p;
+  return p;
+}
+// Was `a` just in a session with party `b`? (Used to skip instant re-matches.)
+function recentlyPaired(a, b) {
+  const t = a.recentlyLeft && a.recentlyLeft[b.id];
+  return !!t && (Date.now() - t) < RECENT_COOLDOWN_MS;
+}
+// Everyone this socket is (or should be) mesh-connected to right now.
+function roomMembers(socket) {
+  const p = socket.party;
+  if (!p) return [socket];
+  if (p.session) { const all = []; p.session.parties.forEach((pt) => pt.members.forEach((m) => all.push(m))); return all; }
+  return p.members;
+}
+// Deterministic initiator per pair (smaller peerId offers) — avoids WebRTC glare.
+function connectPair(a, b, friend) {
+  send(a, { type: 'peer-join', peerId: b.peerId, initiator: a.peerId < b.peerId, friend: !!friend });
+  send(b, { type: 'peer-join', peerId: a.peerId, initiator: b.peerId < a.peerId, friend: !!friend });
+}
+function leavePair(a, b) {
+  send(a, { type: 'peer-leave', peerId: b.peerId });
+  send(b, { type: 'peer-leave', peerId: a.peerId });
 }
 
-// How long after a pair splits either side can still "Report last" the other.
-const REPORT_LAST_GRACE_MS = 30000;
+// ---- matchmaking ----------------------------------------------------------
 
-function unpair(socket, notifyPartner) {
-  const partner = partners.get(socket);
-  if (partner) {
-    partners.delete(partner);
-    partners.delete(socket);
-    // Remember each other for a short grace window so a post-skip "Report last"
-    // is actionable even though the pair is already torn down.
-    const now = Date.now();
-    socket.lastPartner = { socket: partner, ip: partner.ip, at: now };
-    partner.lastPartner = { socket, ip: socket.ip, at: now };
-    if (notifyPartner && partner.readyState === partner.OPEN) {
-      send(partner, { type: 'partner-left' });
-    }
-  }
-}
+function enqueue(party) {
+  if (party.session || party.members.length === 0) return;
+  searching = searching.filter((p) => p !== party);
 
-// How long an interest-seeker waits for a shared-interest partner before we
-// fall back to matching them with anyone (so nobody is ever stuck).
-const FALLBACK_MS = 6000;
-
-function enqueue(socket) {
-  waiting = waiting.filter((s) => s !== socket);
-
-  // 1) Best shared-interest match among compatible people already waiting.
-  let bestIdx = -1, bestScore = 0;   // start at 0: only a real overlap counts
-  for (let i = 0; i < waiting.length; i++) {
-    const s = waiting[i];
-    if (s.readyState !== s.OPEN || !compatible(socket, s)) continue;
-    const score = intersect(socket.interests, s.interests).length;
+  // Best compatible shared-interest match among waiting parties.
+  let bestIdx = -1, bestScore = 0;
+  for (let i = 0; i < searching.length; i++) {
+    const q = searching[i];
+    if (!compatible(party.prefs, q.prefs) || recentlyPaired(party, q)) continue;
+    const score = intersect(party.prefs.interests, q.prefs.interests).length;
     if (score > bestScore) { bestScore = score; bestIdx = i; }
   }
+  // No shared interest: if this party listed none, take any compatible party.
+  if (bestIdx === -1 && party.prefs.interests.length === 0) {
+    bestIdx = searching.findIndex((q) => compatible(party.prefs, q.prefs) && !recentlyPaired(party, q));
+  }
   if (bestIdx !== -1) {
-    const partner = waiting.splice(bestIdx, 1)[0];
-    return pair(socket, partner);
+    const partner = searching.splice(bestIdx, 1)[0];
+    return match(party, partner);
   }
 
-  // 2) No shared interest found. If THIS user listed no interests, they don't
-  //    care who they meet — match them with the longest-waiting compatible user.
-  if (socket.interests.length === 0) {
-    const idx = waiting.findIndex((s) => s.readyState === s.OPEN && compatible(socket, s));
-    if (idx !== -1) {
-      const partner = waiting.splice(idx, 1)[0];
-      return pair(socket, partner);
-    }
-  }
-
-  // 3) Otherwise wait a bit — a shared-interest partner may arrive. The
-  //    fallback sweeper below pairs anyone who has waited past FALLBACK_MS.
-  socket.waitingSince = Date.now();
-  waiting.push(socket);
-  send(socket, { type: 'waiting' });
+  party.waitingSince = Date.now();
+  searching.push(party);
+  party.members.forEach((m) => send(m, { type: 'waiting' }));
 }
 
-// Fallback matcher: pair up users who've been waiting too long, regardless of
-// interests, so an interest-seeker never waits forever.
+// Pair up parties that have waited past FALLBACK_MS (still respecting filters).
 setInterval(() => {
   const now = Date.now();
-  const stale = waiting.filter((s) => s.readyState === s.OPEN && now - (s.waitingSince || now) >= FALLBACK_MS);
+  const stale = searching.filter((p) => now - (p.waitingSince || now) >= FALLBACK_MS);
   for (let i = 0; i < stale.length; i++) {
     const a = stale[i];
-    if (!waiting.includes(a)) continue;               // already paired this pass
+    if (!searching.includes(a)) continue;
     for (let j = i + 1; j < stale.length; j++) {
       const b = stale[j];
-      if (!waiting.includes(b) || !compatible(a, b)) continue;
-      waiting = waiting.filter((s) => s !== a && s !== b);
-      pair(a, b);
+      if (!searching.includes(b) || !compatible(a.prefs, b.prefs) || recentlyPaired(a, b)) continue;
+      searching = searching.filter((p) => p !== a && p !== b);
+      match(a, b);
       break;
     }
   }
 }, 2000);
 
-// Kick a socket off entirely (used when someone is banned).
+function match(pA, pB) {
+  const session = { parties: [pA, pB] };
+  pA.session = session; pB.session = session;
+  searching = searching.filter((p) => p !== pA && p !== pB);
+
+  // Mesh: connect every cross-party pair (within-party pairs already connected).
+  pA.members.forEach((a) => pB.members.forEach((b) => connectPair(a, b, false)));
+
+  const shared = intersect(pA.prefs.interests, pB.prefs.interests);
+  [...pA.members, ...pB.members].forEach((m) => send(m, { type: 'matched', shared, size: pA.members.length + pB.members.length }));
+  console.log(`Session: party#${pA.id}(${pA.members.length}) + party#${pB.id}(${pB.members.length})`);
+}
+
+// Dissolve a session. `reenqueue` is the list of parties that keep searching.
+function dissolveSession(session, reenqueue) {
+  const [pA, pB] = session.parties;
+  const now = Date.now();
+  // Drop the cross-party mesh connections and remember opponents for "Report last".
+  pA.members.forEach((a) => pB.members.forEach((b) => {
+    leavePair(a, b);
+    a.lastOpponents = (a.lastOpponents || []).concat({ ip: b.ip, at: now });
+    b.lastOpponents = (b.lastOpponents || []).concat({ ip: a.ip, at: now });
+  }));
+  pA.session = null; pB.session = null;
+  pA.recentlyLeft[pB.id] = now; pB.recentlyLeft[pA.id] = now;   // no instant re-match
+  reenqueue.forEach((p) => { if (p && p.members.length) enqueue(p); });
+}
+
+// ---- moderation / bans ----------------------------------------------------
+
 function banSocket(socket) {
   bannedIps.add(socket.ip);
-  console.log(`Banned IP ${socket.ip} (socket #${socket.id})`);
+  console.log(`Banned IP ${socket.ip} (${socket.peerId})`);
   send(socket, { type: 'banned' });
-  waiting = waiting.filter((s) => s !== socket);
-  unpair(socket, false);
-  // Give the "banned" message a moment to send, then close the connection.
-  setTimeout(() => {
-    if (socket.readyState === socket.OPEN) socket.close();
-  }, 300);
+  setTimeout(() => { if (socket.readyState === socket.OPEN) socket.close(); }, 300);
 }
+
+// ---- a socket leaves (disconnect or ban) ----------------------------------
+
+function leaveAll(socket) {
+  const p = socket.party;
+  socket.party = null;
+  if (!p) return;
+
+  // Tell everyone currently connected to this socket that it's gone.
+  const mates = roomMembers(socket).filter((m) => m !== socket);
+  mates.forEach((m) => send(m, { type: 'peer-leave', peerId: socket.peerId }));
+
+  p.members = p.members.filter((m) => m !== socket);
+
+  if (p.members.length === 0) {
+    // Party emptied out.
+    searching = searching.filter((x) => x !== p);
+    if (p.code) partiesByCode.delete(p.code);
+    if (p.session) {
+      const other = p.session.parties.find((x) => x !== p);
+      p.session = null;
+      if (other) { other.session = null; if (other.members.length) enqueue(other); }  // partner-left → re-search
+    }
+  }
+  // If the party still has a member and was in a session, the session continues
+  // for the remaining member(s); nothing else to do.
+}
+
+// ---- connection handler ---------------------------------------------------
 
 wss.on('connection', (socket, req) => {
   socket.id = nextId++;
+  socket.peerId = 'u' + socket.id;
   socket.ip = getClientIp(req);
-  socket.interests = [];
-  socket.language = '';   // '' = any language
-  socket.country = '';    // '' = anywhere
+  socket.party = null;
+  socket.lastOpponents = [];
 
-  // Refuse banned users immediately.
   if (bannedIps.has(socket.ip)) {
-    console.log(`Rejected banned IP ${socket.ip}`);
     send(socket, { type: 'banned' });
     return socket.close();
   }
-
-  console.log(`Connected #${socket.id} (${socket.ip})`);
+  console.log(`Connected ${socket.peerId} (${socket.ip})`);
 
   socket.on('message', (raw) => {
     let msg;
     try { msg = JSON.parse(raw); } catch { return; }
 
     switch (msg.type) {
-      case 'ready':
-        socket.interests = normalizeInterests(msg.interests);
-        socket.language = normPref(msg.language);
-        socket.country = normPref(msg.country);
-        unpair(socket, true);
-        enqueue(socket);
+      // ---- Party setup ----
+      case 'create-party': {
+        if (socket.party && (socket.party.members.length > 1 || socket.party.session)) break;
+        const p = (socket.party && !socket.party.session) ? socket.party : newParty(socket);
+        if (p.code) partiesByCode.delete(p.code);
+        p.code = makeCode();
+        partiesByCode.set(p.code, p);
+        send(socket, { type: 'party-created', code: p.code });
         break;
+      }
+      case 'join-party': {
+        const code = String(msg.code || '').trim().toUpperCase();
+        const p = partiesByCode.get(code);
+        if (!p || p.members.length !== 1 || p.session) {
+          return send(socket, { type: 'party-error', reason: "That code isn't valid or the party is full." });
+        }
+        if (socket.party && socket.party !== p) leaveAll(socket);   // drop any solo party first
+        p.members.push(socket);
+        socket.party = p;
+        partiesByCode.delete(code);
+        connectPair(p.members[0], p.members[1], true);
+        p.members.forEach((m) => send(m, { type: 'party-joined', size: 2 }));
+        break;
+      }
+      case 'leave-party': {
+        const p = socket.party;
+        if (p && p.members.length > 1 && !p.session) {
+          leaveAll(socket);        // remove me from the shared party (tells my friend)
+          newParty(socket);        // and give me a fresh solo party
+        }
+        break;
+      }
 
+      // ---- Enter matchmaking ----
+      case 'ready':          // solo
+      case 'party-ready': {  // as a formed party
+        let p = socket.party || newParty(socket);
+        if (p.session) break;                     // already matched — ignore
+        p.prefs = normalizePrefs(msg);
+        enqueue(p);
+        break;
+      }
+
+      // ---- In a room ----
       case 'signal': {
-        const partner = partners.get(socket);
-        if (partner) send(partner, { type: 'signal', data: msg.data });
+        const to = roomMembers(socket).find((m) => m.peerId === msg.to);
+        if (to) send(to, { type: 'signal', from: socket.peerId, data: msg.data });
         break;
       }
-
-      // Relay a text chat message to the current partner (length-capped).
       case 'chat': {
-        const partner = partners.get(socket);
-        if (partner && typeof msg.text === 'string' && msg.text.trim()) {
-          send(partner, { type: 'chat', text: msg.text.slice(0, 500) });
+        if (typeof msg.text === 'string' && msg.text.trim()) {
+          roomMembers(socket).forEach((m) => { if (m !== socket) send(m, { type: 'chat', from: socket.peerId, text: msg.text.slice(0, 500) }); });
         }
         break;
       }
-
-      case 'next':
-        if (msg.interests !== undefined) socket.interests = normalizeInterests(msg.interests);
-        if (msg.language !== undefined) socket.language = normPref(msg.language);
-        if (msg.country !== undefined) socket.country = normPref(msg.country);
-        unpair(socket, true);
-        enqueue(socket);
+      case 'next': {
+        const p = socket.party;
+        if (!p) break;
+        if (msg.interests !== undefined) p.prefs = normalizePrefs(msg);
+        if (p.session) dissolveSession(p.session, p.session.parties.slice());   // both parties re-search
+        else if (!searching.includes(p)) enqueue(p);
         break;
-
-      // Leave the queue entirely (the "Stop" button / "Cancel search"): drop
-      // out of matchmaking and go idle, without re-queueing.
-      case 'stop':
-        waiting = waiting.filter((s) => s !== socket);
-        unpair(socket, true);
+      }
+      case 'stop': {
+        const p = socket.party;
+        if (!p) break;
+        if (p.session) {
+          const other = p.session.parties.find((x) => x !== p);
+          dissolveSession(p.session, other ? [other] : []);   // this party goes idle; they re-search
+        } else {
+          searching = searching.filter((x) => x !== p);        // leave the queue
+        }
+        p.members.forEach((m) => send(m, { type: 'stopped' }));  // both friends return together
         break;
+      }
 
-      // The current user reports their partner for bad behavior.
+      // ---- Moderation ----
       case 'report': {
-        const partner = partners.get(socket);
-        if (partner) {
-          console.log(`Report #${socket.id} -> #${partner.id} reason=${msg.reason || 'n/a'} note=${(msg.note || '').slice(0, 200)}`);
-          banSocket(partner);          // ban + disconnect the reported person
-          send(socket, { type: 'report-ack' });
-          unpair(socket, false);
-          enqueue(socket);             // put the reporter back in the queue
-        }
+        const target = roomMembers(socket).find((m) => m.peerId === msg.to && m !== socket);
+        if (!target) break;
+        console.log(`Report ${socket.peerId} -> ${target.peerId} reason=${msg.reason || 'n/a'} note=${(msg.note || '').slice(0, 120)}`);
+        const p = socket.party;
+        banSocket(target);
+        send(socket, { type: 'report-ack' });
+        if (p && p.session) dissolveSession(p.session, p.session.parties.filter((x) => x.members.length));
         break;
       }
-
-      // Report the person you were just matched with, shortly after skipping.
       case 'report-last': {
-        const lp = socket.lastPartner;
-        if (lp && Date.now() - lp.at <= REPORT_LAST_GRACE_MS) {
-          console.log(`Report-last #${socket.id} -> #${lp.socket && lp.socket.id} reason=${msg.reason || 'n/a'} note=${(msg.note || '').slice(0, 200)}`);
-          if (lp.socket && lp.socket.readyState === lp.socket.OPEN) banSocket(lp.socket);
-          else bannedIps.add(lp.ip);   // they already left — ban by IP
+        const cutoff = Date.now() - REPORT_LAST_GRACE_MS;
+        const recent = (socket.lastOpponents || []).filter((o) => o.at >= cutoff);
+        if (recent.length) {
+          recent.forEach((o) => bannedIps.add(o.ip));
+          console.log(`Report-last ${socket.peerId} banned ${recent.length} ip(s) reason=${msg.reason || 'n/a'}`);
+          // Disconnect any of those still online.
+          wss.clients.forEach((c) => { if (recent.some((o) => o.ip === c.ip) && c.readyState === c.OPEN) banSocket(c); });
           send(socket, { type: 'report-ack', last: true });
-          socket.lastPartner = null;
+          socket.lastOpponents = [];
         }
         break;
       }
@@ -281,14 +366,13 @@ wss.on('connection', (socket, req) => {
   });
 
   socket.on('close', () => {
-    console.log(`Disconnected #${socket.id}`);
-    waiting = waiting.filter((s) => s !== socket);
-    unpair(socket, true);
+    console.log(`Disconnected ${socket.peerId}`);
+    leaveAll(socket);
   });
 });
 
 server.listen(PORT, () => {
-  console.log(`\n  Random Video Chat is running!`);
+  console.log(`\n  Openline is running!`);
   console.log(`  Open this in your browser:  http://localhost:${PORT}\n`);
   console.log(`  Tip: open it in TWO tabs (or two windows) to match with yourself.\n`);
 });
