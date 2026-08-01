@@ -72,6 +72,12 @@ const server = http.createServer((req, res) => {
     return res.end(JSON.stringify({ iceServers: buildIceServers() }));
   }
 
+  // Public client config (Supabase URL + anon key). Empty until env is set.
+  if (urlPath === '/config') {
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    return res.end(JSON.stringify({ supabaseUrl: process.env.SUPABASE_URL || '', supabaseAnonKey: process.env.SUPABASE_ANON_KEY || '' }));
+  }
+
   // Moderation report log (JSON). Gated by ?key=<ADMIN_KEY>; disabled if unset.
   if (urlPath === '/admin/reports') {
     const key = new URLSearchParams((req.url.split('?')[1] || '')).get('key');
