@@ -61,7 +61,7 @@ TURN_SECRET=<the same static-auth-secret>
 TURN_TTL=43200        # optional; credential lifetime in seconds (default 12h)
 ```
 
-The server generates `username = <expiry>:openline` and
+The server generates `username = <expiry>:olumie` and
 `credential = base64(HMAC-SHA1(TURN_SECRET, username))` per request — the
 standard coturn REST scheme.
 
