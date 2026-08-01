@@ -3,7 +3,17 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Openline — talk to someone new</title>
+<title>Openline — Free Random Video Chat</title>
+<meta name="description" content="Openline is a free random video chat — meet new people one-on-one on live video, or team up with a friend in Party Mode. Moderated, 18+, no signup." />
+<meta name="theme-color" content="#0d1117" />
+<link rel="canonical" href="https://random-video-chat-azkk.onrender.com/" />
+<meta property="og:type" content="website" />
+<meta property="og:title" content="Openline — Free Random Video Chat" />
+<meta property="og:description" content="Meet new people on live video, solo or with a friend in Party Mode. Moderated, 18+, no signup." />
+<meta property="og:url" content="https://random-video-chat-azkk.onrender.com/" />
+<meta name="twitter:card" content="summary" />
+<meta name="twitter:title" content="Openline — Free Random Video Chat" />
+<meta name="twitter:description" content="Meet new people on live video, solo or with a friend in Party Mode. Moderated, 18+, no signup." />
 
 <!-- In-browser NSFW detection (free, no API key). tfjs is the ML engine;
      nsfwjs is the model that scores a frame for explicit content.
@@ -121,6 +131,17 @@
   .is-hidden { display: none !important; }
   .c-modal__sheet { max-height: 90dvh; overflow: auto; }
 
+  /* crawlable-but-invisible heading (SEO / a11y) */
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+
+  /* age / rules gate (shown once, before anything else) */
+  .age-gate { position: fixed; inset: 0; z-index: 90; background: var(--bg); display: none; align-items: center; justify-content: center; padding: 24px; }
+  .age-gate.show { display: flex; }
+  .age-card { max-width: 440px; display: flex; flex-direction: column; gap: 14px; align-items: center; text-align: center; }
+  .age-logo { width: 40px; height: 40px; border-radius: 10px; background: var(--primary); }
+  .age-list { text-align: left; color: var(--text-muted); font-size: var(--fs-sm); line-height: 1.7; margin: 4px 0; padding-left: 18px; }
+  .age-list strong { color: var(--text); }
+
   @media (max-width: 720px) {
     .statusbar { padding: 8px 14px; }
     .videorow { grid-template-columns: 1fr; position: relative; padding: 10px 12px 0; }
@@ -143,6 +164,7 @@
 </style>
 </head>
 <body class="c-root c-stage" data-state="idle">
+<h1 class="sr-only">Openline — free random video chat with strangers, one-on-one or with a friend in Party Mode</h1>
 <div class="shell">
 
   <!-- Status bar -->
@@ -302,6 +324,22 @@
 <!-- Toast -->
 <div class="c-toast c-toast--success is-hidden" id="toast"><span class="c-toast__dot"></span> <span id="toastText"></span></div>
 
+<!-- Age / rules gate -->
+<div class="age-gate" id="ageGate">
+  <div class="age-card">
+    <div class="age-logo"></div>
+    <h2 class="c-h2">Before you start</h2>
+    <p class="c-body c-muted" style="font-size:var(--fs-sm)">Openline connects you with random people on live video. By entering, you confirm:</p>
+    <ul class="age-list">
+      <li>You are <strong>18 or older</strong>.</li>
+      <li>No <strong>nudity, harassment, or illegal content</strong> — ever.</li>
+      <li>Anyone can report you. Reports are reviewed and can get you <strong>banned</strong>.</li>
+    </ul>
+    <button class="c-btn c-btn--lg" id="ageAccept" style="width:100%">I'm 18 or older — enter</button>
+    <button class="c-btn c-btn--ghost c-btn--sm" id="ageLeave">Leave</button>
+  </div>
+</div>
+
 <!-- Banned overlay -->
 <div class="banned-screen" id="banned-screen">
   <h1>You've been banned</h1>
@@ -346,6 +384,7 @@ const els = {
   filtersModal: $('filters-modal'), filtersBackdrop: $('filtersBackdrop'), filtersDone: $('filtersDone'), countryOptions: $('countryOptions'), languageOptions: $('languageOptions'),
   joinModal: $('join-modal'), joinBackdrop: $('joinBackdrop'), joinCodeInput: $('joinCodeInput'), joinCancel: $('joinCancel'), joinConfirm: $('joinConfirm'),
   toast: $('toast'), toastText: $('toastText'), banned: $('banned-screen'), sampler: $('sampler'), settingsBtn: $('settingsBtn'),
+  ageGate: $('ageGate'), ageAccept: $('ageAccept'), ageLeave: $('ageLeave'),
 };
 
 let localStream = null, ws = null;
@@ -509,9 +548,11 @@ function setChatEnabled(on) {
   const names = [...peers.values()].map((p) => p.name);
   els.chatInput.placeholder = on ? (peers.size === 1 ? ('Message ' + names[0] + '…') : 'Message the room…') : 'Message will send once you’re matched…';
 }
+const LINK_RE = /(https?:\/\/\S+|www\.\S+|\b[a-z0-9-]+\.(?:com|net|org|io|co|gg|xyz|link|ru|tv|me|app|live|info|biz)\S*)/i;
 function sendChat() {
   const text = els.chatInput.value.trim();
   if (!text || els.chatInput.disabled) return;
+  if (LINK_RE.test(text)) { toast('Links aren’t allowed in chat.'); return; }
   wsSend({ type: 'chat', text }); addChat(text, 'me', 'You'); els.chatInput.value = '';
 }
 els.chatSend.addEventListener('click', sendChat);
@@ -548,19 +589,43 @@ async function initModeration() {
     if (typeof nsfwjs === 'undefined' || typeof tf === 'undefined') throw new Error('Safety libraries did not load.');
     nsfwModel = await nsfwjs.load(); moderationState = 'on';
     if (moderationTimer) clearInterval(moderationTimer);
-    moderationTimer = setInterval(checkOwnCamera, SAMPLE_MS);
+    moderationTimer = setInterval(moderationTick, SAMPLE_MS);
   } catch (err) { console.warn('Moderation disabled:', err); nsfwModel = null; moderationState = 'off'; }
   updateShield();
 }
+// Each tick: check your own camera, plus one remote peer (round-robin to bound CPU).
+async function moderationTick() { await checkOwnCamera(); await checkOneRemote(); }
+function scoreExplicit(video) {
+  const ctx = els.sampler.getContext('2d'); ctx.drawImage(video, 0, 0, els.sampler.width, els.sampler.height);
+  return nsfwModel.classify(els.sampler).then((preds) => {
+    const s = {}; preds.forEach((p) => { s[p.className] = p.probability; });
+    return ((s['Porn'] || 0) + (s['Hentai'] || 0)) >= EXPLICIT_THRESHOLD || (s['Sexy'] || 0) >= SEXY_THRESHOLD;
+  });
+}
 async function checkOwnCamera() {
   if (!nsfwModel || !localStream || peers.size === 0) return;   // only when others can see you
+  try { if (await scoreExplicit(els.local)) { tripCount++; if (tripCount >= TRIPS_BEFORE_ACTION) handleSelfViolation(); } else tripCount = 0; }
+  catch (err) { console.warn('Safety check error:', err); }
+}
+let remoteIdx = 0;
+async function checkOneRemote() {
+  if (!nsfwModel) return;
+  // Watch strangers' video (not friends you invited). One per tick, rotating.
+  const list = [...peers.entries()].filter(([, e]) => !e.friend && e.stream && e.video && e.video.readyState >= 2);
+  if (!list.length) return;
+  const [id, entry] = list[remoteIdx++ % list.length];
   try {
-    const ctx = els.sampler.getContext('2d'); ctx.drawImage(els.local, 0, 0, els.sampler.width, els.sampler.height);
-    const preds = await nsfwModel.classify(els.sampler); const s = {}; preds.forEach((p) => { s[p.className] = p.probability; });
-    const explicit = (s['Porn'] || 0) + (s['Hentai'] || 0);
-    if (explicit >= EXPLICIT_THRESHOLD || (s['Sexy'] || 0) >= SEXY_THRESHOLD) { tripCount++; if (tripCount >= TRIPS_BEFORE_ACTION) handleSelfViolation(); }
-    else tripCount = 0;
-  } catch (err) { console.warn('Safety check error:', err); }
+    if (await scoreExplicit(entry.video)) { entry.trips = (entry.trips || 0) + 1; if (entry.trips >= TRIPS_BEFORE_ACTION) autoModerateRemote(id); }
+    else entry.trips = 0;
+  } catch (err) { console.warn('Remote safety check error:', err); }
+}
+// Detected explicit content from a stranger: skip out and report them.
+function autoModerateRemote(peerId) {
+  const entry = peers.get(peerId); if (!entry) return;
+  entry.trips = 0;
+  wsSend({ type: 'report', to: peerId, reason: 'auto: explicit content detected' });
+  toast('Skipped — inappropriate content detected.');
+  clearChat(); setSearchReason('searching'); phase = 'searching'; render();
 }
 function handleSelfViolation() {
   tripCount = 0; strikes++;
@@ -728,8 +793,16 @@ els.reportSubmit.addEventListener('click', () => {
   closeReport();
 });
 
+// --- Age / rules gate -----------------------------------------------------
+function initAgeGate() {
+  let ok = false; try { ok = localStorage.getItem('openline_age_ok') === '1'; } catch {}
+  if (!ok) els.ageGate.classList.add('show');
+}
+els.ageAccept.addEventListener('click', () => { try { localStorage.setItem('openline_age_ok', '1'); } catch {} els.ageGate.classList.remove('show'); });
+els.ageLeave.addEventListener('click', () => { window.location.href = 'https://www.google.com'; });
+
 // --- Boot -----------------------------------------------------------------
-phase = 'idle'; render(); updateShield();
+phase = 'idle'; render(); updateShield(); initAgeGate();
 fetchIce();   // warm the ICE/TURN config; refreshed again before each session
 // Camera is acquired on the first user gesture (tap the preview or a button).
 </script>

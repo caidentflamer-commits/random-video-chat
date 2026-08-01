@@ -53,7 +53,14 @@ function buildIceServers() {
 
 // ---- 1. Serve the frontend files -----------------------------------------
 
-const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css' };
+const MIME = {
+  '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css',
+  '.txt': 'text/plain; charset=utf-8', '.xml': 'application/xml; charset=utf-8',
+  '.png': 'image/png', '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.json': 'application/json',
+};
+
+// Strip links from chat (basic anti-scam). Bypassable client-side, so enforce here too.
+const LINK_RE = /(https?:\/\/\S+|www\.\S+|\b[a-z0-9-]+\.(?:com|net|org|io|co|gg|xyz|link|ru|tv|me|app|live|info|biz)\S*)/gi;
 
 const server = http.createServer((req, res) => {
   let urlPath = req.url.split('?')[0];
@@ -342,7 +349,8 @@ wss.on('connection', (socket, req) => {
       }
       case 'chat': {
         if (typeof msg.text === 'string' && msg.text.trim()) {
-          roomMembers(socket).forEach((m) => { if (m !== socket) send(m, { type: 'chat', from: socket.peerId, text: msg.text.slice(0, 500) }); });
+          const clean = msg.text.slice(0, 500).replace(LINK_RE, '[link removed]');
+          roomMembers(socket).forEach((m) => { if (m !== socket) send(m, { type: 'chat', from: socket.peerId, text: clean }); });
         }
         break;
       }
