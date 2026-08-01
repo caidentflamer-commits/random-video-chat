@@ -195,6 +195,7 @@
           <div class="party-controls">
             <button class="c-btn c-btn--secondary c-btn--sm" id="createPartyBtn">👥 Create a party</button>
             <button class="c-btn c-btn--secondary c-btn--sm" id="joinPartyBtn">Join a party</button>
+            <button class="c-btn c-btn--ghost c-btn--sm is-hidden" id="supportBtn">❤ Support Olumie</button>
           </div>
         </div>
         <div id="partyWaiting" class="is-hidden">
@@ -350,6 +351,10 @@
 <canvas id="sampler" width="224" height="224" style="display:none"></canvas>
 
 <script>
+// Paste your Stripe Payment Link here to show the "Support Olumie" button.
+// Empty = button stays hidden. (Later this becomes the "go ad-free" upgrade.)
+const SUPPORT_URL = '';
+
 // ICE servers come from the server's /ice endpoint (STUN + optional TURN with
 // fresh credentials). Falls back to STUN-only if the fetch fails.
 let iceConfig = [{ urls: 'stun:stun.l.google.com:19302' }];
@@ -375,7 +380,7 @@ const els = {
   chatEmpty: $('chatEmpty'), chatLog: $('chatLog'), chatInput: $('chat-input'), chatSend: $('chat-send'),
   startBtn: $('startBtn'), cancelBtn: $('cancelBtn'), connectedActions: $('connectedActions'), skipBtn: $('skipBtn'), stopBtn: $('stopBtn'),
   partyActions: $('partyActions'), findPeopleBtn: $('findPeopleBtn'), leavePartyBtn: $('leavePartyBtn'),
-  createPartyBtn: $('createPartyBtn'), joinPartyBtn: $('joinPartyBtn'), cancelPartyBtn: $('cancelPartyBtn'),
+  createPartyBtn: $('createPartyBtn'), joinPartyBtn: $('joinPartyBtn'), cancelPartyBtn: $('cancelPartyBtn'), supportBtn: $('supportBtn'),
   micBtn: $('micBtn'), camBtn: $('camBtn'),
   idleRules: $('idleRules'), connectedHelp: $('connectedHelp'), reportLast: $('reportLast'), editInterests: $('editInterests'),
   idleInterests: $('idleInterests'),
@@ -801,6 +806,12 @@ function initAgeGate() {
 }
 els.ageAccept.addEventListener('click', () => { try { localStorage.setItem('olumie_age_ok', '1'); } catch {} els.ageGate.classList.remove('show'); });
 els.ageLeave.addEventListener('click', () => { window.location.href = 'https://www.google.com'; });
+
+// Support / tip button — shown only when a payment link is configured.
+if (SUPPORT_URL) {
+  show(els.supportBtn, true);
+  els.supportBtn.addEventListener('click', () => window.open(SUPPORT_URL, '_blank', 'noopener'));
+}
 
 // --- Boot -----------------------------------------------------------------
 phase = 'idle'; render(); updateShield(); initAgeGate();
