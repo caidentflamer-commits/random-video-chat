@@ -113,6 +113,7 @@ const server = http.createServer((req, res) => {
     return res.end(JSON.stringify({
       supabaseUrl: process.env.SUPABASE_URL || '',
       supabaseAnonKey: process.env.SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY || '',
+      supabaseConnected: !!supa,   // server successfully created the admin client (secret key OK)
     }));
   }
 
