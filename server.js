@@ -64,6 +64,29 @@ if (process.env.SUPABASE_URL && SUPABASE_SECRET) {
     console.log('Supabase connected — durable bans + reports enabled.');
   } catch (e) { console.warn('Supabase init failed (staying in-memory):', e.message); }
 }
+
+// ---- Stripe (Premium subscriptions) --------------------------------------
+// Inert unless STRIPE_SECRET_KEY is set. The webhook flips profiles.is_premium.
+const stripe = process.env.STRIPE_SECRET_KEY ? require('stripe')(process.env.STRIPE_SECRET_KEY) : null;
+async function handleStripeEvent(event) {
+  if (!supa) return;
+  try {
+    if (event.type === 'checkout.session.completed') {
+      const s = event.data.object;
+      if (s.client_reference_id) {   // = the Supabase user id we appended to the link
+        await supa.from('profiles').update({ is_premium: true, stripe_customer_id: s.customer || null }).eq('id', s.client_reference_id);
+        console.log('Premium ON:', s.client_reference_id);
+      }
+    } else if (event.type === 'customer.subscription.deleted' ||
+      (event.type === 'customer.subscription.updated' && ['canceled', 'unpaid', 'incomplete_expired'].includes(event.data.object.status))) {
+      const customer = event.data.object.customer;
+      if (customer) {
+        await supa.from('profiles').update({ is_premium: false }).eq('stripe_customer_id', customer);
+        console.log('Premium OFF for customer:', customer);
+      }
+    }
+  } catch (e) { console.warn('stripe event handler:', e.message); }
+}
 async function dbInsertBan(ip, reason) {
   if (!supa || !ip) return;
   try { await supa.from('bans').insert({ ip, reason: reason || null }); } catch (e) { console.warn('db ban insert:', e.message); }
@@ -118,6 +141,22 @@ const LINK_RE = /(https?:\/\/\S+|www\.\S+|\b[a-z0-9-]+\.(?:com|net|org|io|co|gg|
 
 const server = http.createServer((req, res) => {
   let urlPath = req.url.split('?')[0];
+
+  // Stripe webhook (POST) — raw body required for signature verification.
+  if (req.method === 'POST' && urlPath === '/stripe/webhook') {
+    if (!stripe || !process.env.STRIPE_WEBHOOK_SECRET) { res.writeHead(503); return res.end('stripe not configured'); }
+    const chunks = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', async () => {
+      try {
+        const event = stripe.webhooks.constructEvent(Buffer.concat(chunks), req.headers['stripe-signature'], process.env.STRIPE_WEBHOOK_SECRET);
+        await handleStripeEvent(event);
+        res.writeHead(200); res.end('ok');
+      } catch (e) { console.warn('stripe webhook error:', e.message); res.writeHead(400); res.end('bad signature'); }
+    });
+    return;
+  }
+
   if (urlPath === '/') urlPath = '/index.html';
 
   // ICE/TURN config for the client (fresh HMAC credentials each request).
@@ -133,6 +172,7 @@ const server = http.createServer((req, res) => {
       supabaseUrl: process.env.SUPABASE_URL || '',
       supabaseAnonKey: process.env.SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY || '',
       supabaseConnected: !!supa,   // server successfully created the admin client (secret key OK)
+      premiumUrl: process.env.STRIPE_PAYMENT_LINK || '',   // Premium subscription checkout link
     }));
   }
 

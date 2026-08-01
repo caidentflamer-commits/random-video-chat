@@ -4,11 +4,14 @@
 
 -- Profiles: one row per user. Holds premium status for Phase 2 subscriptions.
 create table if not exists public.profiles (
-  id            uuid primary key references auth.users(id) on delete cascade,
-  created_at    timestamptz not null default now(),
-  is_premium    boolean not null default false,
-  premium_until timestamptz
+  id                 uuid primary key references auth.users(id) on delete cascade,
+  created_at         timestamptz not null default now(),
+  is_premium         boolean not null default false,
+  premium_until      timestamptz,
+  stripe_customer_id text
 );
+-- For projects created before Stripe was added:
+alter table public.profiles add column if not exists stripe_customer_id text;
 
 -- Bans: durable now (survive restarts/redeploys). Matched on user_id or IP.
 create table if not exists public.bans (

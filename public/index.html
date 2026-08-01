@@ -422,7 +422,7 @@ const els = {
 };
 
 let localStream = null, ws = null;
-let sb = null, authToken = null, authUser = null, isPremium = false;   // Supabase account (optional)
+let sb = null, authToken = null, authUser = null, isPremium = false, premiumUrl = '';   // Supabase account (optional)
 const peers = new Map();              // peerId -> { pc, tile, video, placeholder, friend, name, stream }
 const party = { active: false, code: null };
 let phase = 'idle';                   // 'idle' | 'searching' | 'connected'
@@ -529,10 +529,22 @@ function renderFilterOptions() {
     els.genderOptions.appendChild(b);
   });
 }
-// Placeholder until Stripe is wired (Phase 2b): explain the perk + nudge sign-in.
+// Launch the Premium subscription checkout for the signed-in user.
 function openUpgrade() {
-  toast(authUser ? 'Gender filter is Premium — subscriptions are coming very soon.' : 'Gender filter is a Premium feature — sign in, then subscribe (coming soon).');
+  if (!authUser) { toast('Sign in first, then upgrade to Premium.'); openAuth(); return; }
+  if (!premiumUrl) { toast('Premium is coming very soon.'); return; }
+  try {
+    const u = new URL(premiumUrl);
+    u.searchParams.set('client_reference_id', authUser.id);
+    if (authUser.email) u.searchParams.set('prefilled_email', authUser.email);
+    window.open(u.toString(), '_blank', 'noopener');
+    toast('Opening secure checkout…');
+  } catch { window.open(premiumUrl, '_blank', 'noopener'); }
 }
+// After returning from checkout, re-check premium status.
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && authToken && ws && ws.readyState === ws.OPEN) wsSend({ type: 'auth', token: authToken });
+});
 function openFilters() { renderFilterOptions(); show(els.filtersModal, true); }
 function closeFilters() { show(els.filtersModal, false); renderIdleInterests(); if (phase === 'searching') wsSend({ type: 'ready', ...matchPayload() }); }
 
@@ -796,7 +808,11 @@ function onMessage(event) {
     case 'signal': onSignal(msg.from, msg.data); break;
     case 'chat': { const e = peers.get(msg.from); addChat(msg.text, 'them', e ? e.name : 'Stranger'); break; }
     case 'report-ack': toast('Reported. You won’t be matched with them again.'); break;
-    case 'account': isPremium = !!msg.premium; break;   // premium gating is Phase 2
+    case 'account':
+      isPremium = !!msg.premium;
+      renderIdleInterests();
+      if (!els.filtersModal.classList.contains('is-hidden')) renderFilterOptions();
+      break;
     case 'banned': showBanned(); break;
   }
 }
@@ -891,6 +907,7 @@ if (SUPPORT_URL) {
 async function initAuth() {
   let cfg;
   try { cfg = await (await fetch('/config', { cache: 'no-store' })).json(); } catch { return; }
+  premiumUrl = cfg.premiumUrl || '';
   if (!cfg.supabaseUrl || !cfg.supabaseAnonKey || !window.supabase) return;   // not configured / lib missing
   try {
     sb = window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey);
