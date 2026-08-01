@@ -72,6 +72,14 @@ const server = http.createServer((req, res) => {
     return res.end(JSON.stringify({ iceServers: buildIceServers() }));
   }
 
+  // Moderation report log (JSON). Gated by ?key=<ADMIN_KEY>; disabled if unset.
+  if (urlPath === '/admin/reports') {
+    const key = new URLSearchParams((req.url.split('?')[1] || '')).get('key');
+    if (!process.env.ADMIN_KEY || key !== process.env.ADMIN_KEY) { res.writeHead(403); return res.end('Forbidden'); }
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    return res.end(JSON.stringify({ count: recentReports.length, reports: recentReports.slice().reverse() }, null, 2));
+  }
+
   const filePath = path.join(PUBLIC_DIR, path.normalize(urlPath));
   if (!filePath.startsWith(PUBLIC_DIR)) {
     res.writeHead(403);
@@ -132,6 +140,24 @@ function compatible(a, b) {
 }
 function normalizePrefs(msg) {
   return { interests: normalizeInterests(msg.interests), country: normPref(msg.country), language: normPref(msg.language) };
+}
+
+// ---- report audit trail ---------------------------------------------------
+// Three layers: structured server logs (Render captures them), an in-memory
+// buffer viewable at /admin/reports (gated by ADMIN_KEY), and an optional
+// webhook push (REPORT_WEBHOOK_URL, Discord-compatible) for a durable feed.
+const recentReports = [];
+const MAX_REPORTS = 500;
+function logReport(rec) {
+  rec.ts = new Date().toISOString();
+  console.log('REPORT ' + JSON.stringify(rec));
+  recentReports.push(rec);
+  if (recentReports.length > MAX_REPORTS) recentReports.shift();
+  const hook = process.env.REPORT_WEBHOOK_URL;
+  if (hook && typeof fetch === 'function') {
+    const line = `🚩 **${rec.kind}** · reason: ${rec.reason || 'n/a'}${rec.note ? ` · note: ${rec.note}` : ''} · reporter ${rec.reporter} → ${rec.target || rec.targetIp || 'n/a'} · ${rec.action}`;
+    try { fetch(hook, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: line.slice(0, 1900) }) }).catch(() => {}); } catch {}
+  }
 }
 
 // ---- parties, rooms & mesh -----------------------------------------------
@@ -379,7 +405,11 @@ wss.on('connection', (socket, req) => {
       case 'report': {
         const target = roomMembers(socket).find((m) => m.peerId === msg.to && m !== socket);
         if (!target) break;
-        console.log(`Report ${socket.peerId} -> ${target.peerId} reason=${msg.reason || 'n/a'} note=${(msg.note || '').slice(0, 120)}`);
+        logReport({
+          kind: String(msg.reason || '').startsWith('auto:') ? 'auto-moderation' : 'user-report',
+          reporter: socket.peerId, reporterIp: socket.ip, target: target.peerId, targetIp: target.ip,
+          reason: String(msg.reason || '').slice(0, 80), note: String(msg.note || '').slice(0, 200), action: 'banned',
+        });
         const p = socket.party;
         banSocket(target);
         send(socket, { type: 'report-ack' });
@@ -391,7 +421,11 @@ wss.on('connection', (socket, req) => {
         const recent = (socket.lastOpponents || []).filter((o) => o.at >= cutoff);
         if (recent.length) {
           recent.forEach((o) => bannedIps.add(o.ip));
-          console.log(`Report-last ${socket.peerId} banned ${recent.length} ip(s) reason=${msg.reason || 'n/a'}`);
+          logReport({
+            kind: 'report-last', reporter: socket.peerId, reporterIp: socket.ip, target: null,
+            targetIp: recent.map((o) => o.ip).join(','), reason: String(msg.reason || '').slice(0, 80),
+            note: String(msg.note || '').slice(0, 200), action: `banned ${recent.length} ip(s)`,
+          });
           // Disconnect any of those still online.
           wss.clients.forEach((c) => { if (recent.some((o) => o.ip === c.ip) && c.readyState === c.OPEN) banSocket(c); });
           send(socket, { type: 'report-ack', last: true });
