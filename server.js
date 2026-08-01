@@ -86,6 +86,24 @@ async function dbInsertReport(rec) {
   } catch (e) { console.warn('db report insert:', e.message); }
 }
 
+// Verify a Supabase session token (from a signed-in browser) and attach the
+// user to the socket. Anonymous users simply never send this. Best-effort:
+// any failure just leaves the socket anonymous.
+async function handleAuth(socket, token) {
+  if (!supa || typeof token !== 'string' || !token) return;
+  try {
+    const { data, error } = await supa.auth.getUser(token);
+    if (error || !data || !data.user) return;
+    socket.userId = data.user.id;
+    let premium = false;
+    try {
+      const { data: prof } = await supa.from('profiles').select('is_premium').eq('id', socket.userId).single();
+      premium = !!(prof && prof.is_premium);
+    } catch {}
+    send(socket, { type: 'account', email: data.user.email || null, premium });
+  } catch {}
+}
+
 // ---- 1. Serve the frontend files -----------------------------------------
 
 const MIME = {
@@ -407,6 +425,11 @@ wss.on('connection', (socket, req) => {
         }
         break;
       }
+
+      // ---- Account ----
+      case 'auth':
+        handleAuth(socket, msg.token);
+        break;
 
       // ---- Enter matchmaking ----
       case 'ready':          // solo
