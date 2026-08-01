@@ -54,11 +54,13 @@ function buildIceServers() {
 // ---- Supabase (durable bans + reports; accounts come next) ----------------
 // Inert unless SUPABASE_URL + SUPABASE_SERVICE_KEY are set. In-memory paths
 // remain as a fast cache/fallback, so nothing breaks when it's not configured.
+// Accept both the new (SUPABASE_SECRET_KEY) and classic (SUPABASE_SERVICE_KEY) names.
+const SUPABASE_SECRET = process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_KEY;
 let supa = null;
-if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_KEY) {
+if (process.env.SUPABASE_URL && SUPABASE_SECRET) {
   try {
     const { createClient } = require('@supabase/supabase-js');
-    supa = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
+    supa = createClient(process.env.SUPABASE_URL, SUPABASE_SECRET, { auth: { persistSession: false, autoRefreshToken: false } });
     console.log('Supabase connected — durable bans + reports enabled.');
   } catch (e) { console.warn('Supabase init failed (staying in-memory):', e.message); }
 }
@@ -108,7 +110,10 @@ const server = http.createServer((req, res) => {
   // Public client config (Supabase URL + anon key). Empty until env is set.
   if (urlPath === '/config') {
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-    return res.end(JSON.stringify({ supabaseUrl: process.env.SUPABASE_URL || '', supabaseAnonKey: process.env.SUPABASE_ANON_KEY || '' }));
+    return res.end(JSON.stringify({
+      supabaseUrl: process.env.SUPABASE_URL || '',
+      supabaseAnonKey: process.env.SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY || '',
+    }));
   }
 
   // Moderation report log (JSON). Gated by ?key=<ADMIN_KEY>; disabled if unset.

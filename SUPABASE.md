@@ -14,12 +14,17 @@ no extra OAuth setup). Google sign-in can be added later.
    `Success`. This creates the `profiles`, `bans`, and `reports` tables.
 3. **Grab the keys** — **Project Settings → API**. You need four values:
 
-   | Value | Set as Render env var | Secret? |
+   Newer Supabase projects show these exact names — you can literally "Copy all":
+
+   | Supabase value | Render env var | Secret? |
    |---|---|---|
    | Project URL | `SUPABASE_URL` | public |
-   | `anon` `public` key | `SUPABASE_ANON_KEY` | public (browser-safe) |
-   | `service_role` key | `SUPABASE_SERVICE_KEY` | **secret — server only** |
-   | JWT Secret (API → JWT Settings) | `SUPABASE_JWT_SECRET` | **secret — server only** |
+   | Publishable key (`sb_publishable_…`) | `SUPABASE_PUBLISHABLE_KEY` | public (browser-safe) |
+   | Secret key (`sb_secret_…`) | `SUPABASE_SECRET_KEY` | **secret — server only** |
+   | JWKS URL | `SUPABASE_JWKS_URL` | public (used to verify logins) |
+
+   (The server also accepts the classic names `SUPABASE_ANON_KEY` / `SUPABASE_SERVICE_KEY`
+   if your project shows the legacy keys instead.)
 
 4. **Add all four** in Render → your service → **Environment**. That's it — you
    don't need to paste any of them into chat; the app reads them from the env.
