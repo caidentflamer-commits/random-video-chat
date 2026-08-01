@@ -314,6 +314,7 @@
     <div><h3 class="c-h3" id="filtersTitle" style="font-size:var(--fs-md)">Who you meet</h3><p class="c-body c-muted" style="font-size:var(--fs-sm)">Pick a region and language. “Anywhere” / “Any language” matches everyone; a specific choice pairs you only with people who picked the same.</p></div>
     <div class="c-field"><label>Region</label><div id="countryOptions" style="display:flex;flex-wrap:wrap;gap:8px;max-height:150px;overflow:auto"></div></div>
     <div class="c-field"><label>Language</label><div id="languageOptions" style="display:flex;flex-wrap:wrap;gap:8px;max-height:150px;overflow:auto"></div></div>
+    <div class="c-field"><label>Meet <span class="c-muted" id="genderLock" style="font-weight:400;font-size:var(--fs-xs)"></span></label><div id="genderOptions" style="display:flex;flex-wrap:wrap;gap:8px"></div></div>
     <div class="c-modal__actions"><button class="c-btn" id="filtersDone">Done</button></div>
   </div>
 </div>
@@ -353,7 +354,15 @@
       <li>No <strong>nudity, harassment, or illegal content</strong> — ever.</li>
       <li>Anyone can report you. Reports are reviewed and can get you <strong>banned</strong>.</li>
     </ul>
-    <button class="c-btn c-btn--lg" id="ageAccept" style="width:100%">I'm 18 or older — enter</button>
+    <div style="width:100%">
+      <p class="c-label" style="margin:0 0 7px">I am</p>
+      <div class="c-row" id="genderChoose" style="justify-content:center">
+        <button class="c-chip" type="button" data-g="m">Male</button>
+        <button class="c-chip" type="button" data-g="f">Female</button>
+        <button class="c-chip" type="button" data-g="o">Other</button>
+      </div>
+    </div>
+    <button class="c-btn c-btn--lg" id="ageAccept" style="width:100%" disabled>Enter</button>
     <button class="c-btn c-btn--ghost c-btn--sm" id="ageLeave">Leave</button>
   </div>
 </div>
@@ -404,9 +413,10 @@ const els = {
   reportCancel: $('reportCancel'), reportSubmit: $('reportSubmit'), reportBackdrop: $('reportBackdrop'),
   interestsModal: $('interests-modal'), tagSearch: $('tag-search'), tags: $('tags'), interestsDone: $('interestsDone'), interestsBackdrop: $('interestsBackdrop'),
   filtersModal: $('filters-modal'), filtersBackdrop: $('filtersBackdrop'), filtersDone: $('filtersDone'), countryOptions: $('countryOptions'), languageOptions: $('languageOptions'),
+  genderOptions: $('genderOptions'), genderLock: $('genderLock'),
   joinModal: $('join-modal'), joinBackdrop: $('joinBackdrop'), joinCodeInput: $('joinCodeInput'), joinCancel: $('joinCancel'), joinConfirm: $('joinConfirm'),
   toast: $('toast'), toastText: $('toastText'), banned: $('banned-screen'), sampler: $('sampler'), settingsBtn: $('settingsBtn'),
-  ageGate: $('ageGate'), ageAccept: $('ageAccept'), ageLeave: $('ageLeave'),
+  ageGate: $('ageGate'), ageAccept: $('ageAccept'), ageLeave: $('ageLeave'), genderChoose: $('genderChoose'),
   authBtn: $('authBtn'), authModal: $('auth-modal'), authBackdrop: $('authBackdrop'), authEmail: $('authEmail'),
   authMsg: $('authMsg'), authCancel: $('authCancel'), authSend: $('authSend'),
 };
@@ -483,9 +493,14 @@ const LANGUAGES = [
   { v: 'ja', l: 'Japanese' }, { v: 'ko', l: 'Korean' }, { v: 'zh', l: 'Chinese' }, { v: 'tr', l: 'Turkish' }, { v: 'id', l: 'Indonesian' },
 ];
 let prefCountry = 'anywhere', prefLanguage = 'any';
+// Gender: your own (declared at the age gate) + a Premium-only "who to meet" preference.
+const GENDER_PREFS = [{ v: 'any', l: 'Anyone' }, { v: 'f', l: 'Women' }, { v: 'm', l: 'Men' }];
+let myGender = '', myGenderPref = 'any';
+try { myGender = localStorage.getItem('olumie_gender') || ''; myGenderPref = localStorage.getItem('olumie_genderpref') || 'any'; } catch {}
 const countryLabel = (v) => (COUNTRIES.find((c) => c.v === v) || {}).l || 'Anywhere';
 const languageLabel = (v) => (LANGUAGES.find((c) => c.v === v) || {}).l || 'Any language';
-function matchPayload() { return { interests: getInterests(), country: prefCountry, language: prefLanguage }; }
+const genderPrefLabel = (v) => (GENDER_PREFS.find((g) => g.v === v) || {}).l || 'Anyone';
+function matchPayload() { return { interests: getInterests(), country: prefCountry, language: prefLanguage, gender: myGender, genderPref: myGenderPref }; }
 function renderFilterOptions() {
   const build = (container, list, current, set) => {
     container.innerHTML = '';
@@ -498,6 +513,25 @@ function renderFilterOptions() {
   };
   build(els.countryOptions, COUNTRIES, () => prefCountry, (v) => (prefCountry = v));
   build(els.languageOptions, LANGUAGES, () => prefLanguage, (v) => (prefLanguage = v));
+  // Gender preference — Premium only. Free users can only pick "Anyone".
+  els.genderLock.textContent = isPremium ? '' : '🔒 Premium';
+  els.genderOptions.innerHTML = '';
+  GENDER_PREFS.forEach((o) => {
+    const b = document.createElement('button'); b.type = 'button';
+    const locked = !isPremium && o.v !== 'any';
+    b.className = 'c-chip' + (o.v === myGenderPref ? ' is-selected' : '');
+    b.textContent = o.l; if (locked) b.style.opacity = '.55';
+    b.addEventListener('click', () => {
+      if (locked) { openUpgrade(); return; }
+      myGenderPref = o.v; try { localStorage.setItem('olumie_genderpref', o.v); } catch {}
+      renderFilterOptions();
+    });
+    els.genderOptions.appendChild(b);
+  });
+}
+// Placeholder until Stripe is wired (Phase 2b): explain the perk + nudge sign-in.
+function openUpgrade() {
+  toast(authUser ? 'Gender filter is Premium — subscriptions are coming very soon.' : 'Gender filter is a Premium feature — sign in, then subscribe (coming soon).');
 }
 function openFilters() { renderFilterOptions(); show(els.filtersModal, true); }
 function closeFilters() { show(els.filtersModal, false); renderIdleInterests(); if (phase === 'searching') wsSend({ type: 'ready', ...matchPayload() }); }
@@ -544,6 +578,9 @@ function renderIdleInterests() {
   const lc = document.createElement('button'); lc.type = 'button'; lc.className = 'c-chip';
   lc.textContent = (prefLanguage === 'any' ? 'Any language' : languageLabel(prefLanguage)) + ' ▾';
   lc.addEventListener('click', openFilters); els.idleInterests.appendChild(lc);
+  const gc = document.createElement('button'); gc.type = 'button'; gc.className = 'c-chip' + (myGenderPref !== 'any' ? ' is-selected' : '');
+  gc.textContent = 'Meet: ' + genderPrefLabel(myGenderPref) + (isPremium ? '' : ' 🔒') + ' ▾';
+  gc.addEventListener('click', openFilters); els.idleInterests.appendChild(gc);
 }
 renderIdleInterests();
 function openInterests() { show(els.interestsModal, true); els.tagSearch.focus(); }
@@ -822,9 +859,26 @@ els.reportSubmit.addEventListener('click', () => {
 // --- Age / rules gate -----------------------------------------------------
 function initAgeGate() {
   let ok = false; try { ok = localStorage.getItem('olumie_age_ok') === '1'; } catch {}
-  if (!ok) els.ageGate.classList.add('show');
+  if (myGender) {
+    const c = els.genderChoose.querySelector(`[data-g="${myGender}"]`);
+    if (c) c.classList.add('is-selected');
+    els.ageAccept.disabled = false;
+  }
+  if (!ok || !myGender) els.ageGate.classList.add('show');   // re-prompt existing users once for gender
 }
-els.ageAccept.addEventListener('click', () => { try { localStorage.setItem('olumie_age_ok', '1'); } catch {} els.ageGate.classList.remove('show'); });
+els.genderChoose.querySelectorAll('.c-chip').forEach((chip) => chip.addEventListener('click', () => {
+  els.genderChoose.querySelectorAll('.c-chip').forEach((c) => c.classList.remove('is-selected'));
+  chip.classList.add('is-selected');
+  myGender = chip.dataset.g;
+  try { localStorage.setItem('olumie_gender', myGender); } catch {}
+  els.ageAccept.disabled = false;
+}));
+els.ageAccept.addEventListener('click', () => {
+  if (!myGender) return;
+  try { localStorage.setItem('olumie_age_ok', '1'); localStorage.setItem('olumie_gender', myGender); } catch {}
+  els.ageGate.classList.remove('show');
+  renderIdleInterests();
+});
 els.ageLeave.addEventListener('click', () => { window.location.href = 'https://www.google.com'; });
 
 // Support / tip button — shown only when a payment link is configured.

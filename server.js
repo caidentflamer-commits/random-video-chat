@@ -100,6 +100,7 @@ async function handleAuth(socket, token) {
       const { data: prof } = await supa.from('profiles').select('is_premium').eq('id', socket.userId).single();
       premium = !!(prof && prof.is_premium);
     } catch {}
+    socket.isPremium = premium;   // gates gender-preference filtering server-side
     send(socket, { type: 'account', email: data.user.email || null, premium });
   } catch {}
 }
@@ -199,10 +200,27 @@ function isAnyPref(v) { return !v || v === 'any' || v === 'anywhere'; }
 function compatible(a, b) {
   const langOK = isAnyPref(a.language) || isAnyPref(b.language) || a.language === b.language;
   const regionOK = isAnyPref(a.country) || isAnyPref(b.country) || a.country === b.country;
-  return langOK && regionOK;
+  // Gender is mutual: each side's preference (Premium only) must be met by the other's gender.
+  const genderOK =
+    (isAnyGenderPref(a.genderPref) || a.genderPref === b.gender) &&
+    (isAnyGenderPref(b.genderPref) || b.genderPref === a.gender);
+  return langOK && regionOK && genderOK;
 }
-function normalizePrefs(msg) {
-  return { interests: normalizeInterests(msg.interests), country: normPref(msg.country), language: normPref(msg.language) };
+// Gender: self-declared 'm' | 'f' | 'o' (or '' = unspecified).
+function normGender(v) { const g = String(v || '').toLowerCase(); return ['m', 'f', 'o'].includes(g) ? g : ''; }
+// Gender preference (Premium only): 'any' | 'm' | 'f'.
+function normGenderPref(v) { const g = String(v || '').toLowerCase(); return ['m', 'f'].includes(g) ? g : 'any'; }
+function isAnyGenderPref(v) { return !v || v === 'any'; }
+
+function normalizePrefs(msg, premium) {
+  return {
+    interests: normalizeInterests(msg.interests),
+    country: normPref(msg.country),
+    language: normPref(msg.language),
+    gender: normGender(msg.gender),
+    // Only Premium accounts may filter by gender; everyone else is forced to "any".
+    genderPref: premium ? normGenderPref(msg.genderPref) : 'any',
+  };
 }
 
 // ---- report audit trail ---------------------------------------------------
@@ -436,7 +454,7 @@ wss.on('connection', (socket, req) => {
       case 'party-ready': {  // as a formed party
         let p = socket.party || newParty(socket);
         if (p.session) break;                     // already matched — ignore
-        p.prefs = normalizePrefs(msg);
+        p.prefs = normalizePrefs(msg, !!socket.isPremium);
         enqueue(p);
         break;
       }
@@ -457,7 +475,7 @@ wss.on('connection', (socket, req) => {
       case 'next': {
         const p = socket.party;
         if (!p) break;
-        if (msg.interests !== undefined) p.prefs = normalizePrefs(msg);
+        if (msg.interests !== undefined) p.prefs = normalizePrefs(msg, !!socket.isPremium);
         if (p.session) dissolveSession(p.session, p.session.parties.slice());   // both parties re-search
         else if (!searching.includes(p)) enqueue(p);
         break;
