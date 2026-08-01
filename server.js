@@ -51,6 +51,39 @@ function buildIceServers() {
   return servers;
 }
 
+// ---- Supabase (durable bans + reports; accounts come next) ----------------
+// Inert unless SUPABASE_URL + SUPABASE_SERVICE_KEY are set. In-memory paths
+// remain as a fast cache/fallback, so nothing breaks when it's not configured.
+let supa = null;
+if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_KEY) {
+  try {
+    const { createClient } = require('@supabase/supabase-js');
+    supa = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
+    console.log('Supabase connected — durable bans + reports enabled.');
+  } catch (e) { console.warn('Supabase init failed (staying in-memory):', e.message); }
+}
+async function dbInsertBan(ip, reason) {
+  if (!supa || !ip) return;
+  try { await supa.from('bans').insert({ ip, reason: reason || null }); } catch (e) { console.warn('db ban insert:', e.message); }
+}
+async function dbIsBanned(ip) {
+  if (!supa || !ip) return false;
+  try {
+    const { data } = await supa.from('bans').select('id').eq('ip', ip)
+      .or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`).limit(1);
+    return !!(data && data.length);
+  } catch { return false; }
+}
+async function dbInsertReport(rec) {
+  if (!supa) return;
+  try {
+    await supa.from('reports').insert({
+      kind: rec.kind, reporter: rec.reporter, reporter_ip: rec.reporterIp,
+      target: rec.target, target_ip: rec.targetIp, reason: rec.reason, note: rec.note, action: rec.action,
+    });
+  } catch (e) { console.warn('db report insert:', e.message); }
+}
+
 // ---- 1. Serve the frontend files -----------------------------------------
 
 const MIME = {
@@ -159,6 +192,7 @@ function logReport(rec) {
   console.log('REPORT ' + JSON.stringify(rec));
   recentReports.push(rec);
   if (recentReports.length > MAX_REPORTS) recentReports.shift();
+  dbInsertReport(rec);   // durable copy (no-op if Supabase unset)
   const hook = process.env.REPORT_WEBHOOK_URL;
   if (hook && typeof fetch === 'function') {
     const line = `🚩 **${rec.kind}** · reason: ${rec.reason || 'n/a'}${rec.note ? ` · note: ${rec.note}` : ''} · reporter ${rec.reporter} → ${rec.target || rec.targetIp || 'n/a'} · ${rec.action}`;
@@ -323,6 +357,11 @@ wss.on('connection', (socket, req) => {
     send(socket, { type: 'banned' });
     return socket.close();
   }
+  // Durable ban check (survives restarts). Fast in-memory check above covers the
+  // common case; this catches bans persisted before this process started.
+  dbIsBanned(socket.ip).then((banned) => {
+    if (banned && socket.readyState === socket.OPEN) { bannedIps.add(socket.ip); send(socket, { type: 'banned' }); socket.close(); }
+  });
   console.log(`Connected ${socket.peerId} (${socket.ip})`);
 
   socket.on('message', (raw) => {
@@ -417,6 +456,7 @@ wss.on('connection', (socket, req) => {
           reason: String(msg.reason || '').slice(0, 80), note: String(msg.note || '').slice(0, 200), action: 'banned',
         });
         const p = socket.party;
+        dbInsertBan(target.ip, String(msg.reason || '').slice(0, 80));   // durable ban
         banSocket(target);
         send(socket, { type: 'report-ack' });
         if (p && p.session) dissolveSession(p.session, p.session.parties.filter((x) => x.members.length));
@@ -426,7 +466,7 @@ wss.on('connection', (socket, req) => {
         const cutoff = Date.now() - REPORT_LAST_GRACE_MS;
         const recent = (socket.lastOpponents || []).filter((o) => o.at >= cutoff);
         if (recent.length) {
-          recent.forEach((o) => bannedIps.add(o.ip));
+          recent.forEach((o) => { bannedIps.add(o.ip); dbInsertBan(o.ip, 'report-last'); });
           logReport({
             kind: 'report-last', reporter: socket.peerId, reporterIp: socket.ip, target: null,
             targetIp: recent.map((o) => o.ip).join(','), reason: String(msg.reason || '').slice(0, 80),
