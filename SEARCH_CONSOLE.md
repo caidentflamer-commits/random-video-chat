@@ -1,6 +1,6 @@
 # Google Search Console — setup & reference
 
-How Openline is set up in Google Search Console (so search engines find it), and
+How Olumie is set up in Google Search Console (so search engines find it), and
 how to redo it if the URL changes.
 
 **Live URL:** `https://random-video-chat-azkk.onrender.com`

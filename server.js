@@ -1,5 +1,5 @@
 /*
- * Openline — signaling + matchmaking server (rooms, mesh, moderation)
+ * Olumie — signaling + matchmaking server (rooms, mesh, moderation)
  * -------------------------------------------------------------------------
  * Jobs:
  *   1. Serve the frontend (public/ folder) over HTTP.
@@ -42,7 +42,7 @@ function buildIceServers() {
   const urls = (process.env.TURN_URLS || '').split(',').map((s) => s.trim()).filter(Boolean);
   if (urls.length && process.env.TURN_SECRET) {
     const ttl = parseInt(process.env.TURN_TTL || '43200', 10); // seconds (default 12h)
-    const username = `${Math.floor(Date.now() / 1000) + ttl}:openline`;
+    const username = `${Math.floor(Date.now() / 1000) + ttl}:olumie`;
     const credential = crypto.createHmac('sha1', process.env.TURN_SECRET).update(username).digest('base64');
     servers.push({ urls, username, credential });
   } else if (urls.length && process.env.TURN_USERNAME && process.env.TURN_CREDENTIAL) {
@@ -409,7 +409,7 @@ wss.on('connection', (socket, req) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`\n  Openline is running!`);
+  console.log(`\n  Olumie is running!`);
   console.log(`  Open this in your browser:  http://localhost:${PORT}\n`);
   console.log(`  Tip: open it in TWO tabs (or two windows) to match with yourself.\n`);
 });

@@ -4,16 +4,16 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="google-site-verification" content="Svey5jK-1rZb9ZG1HTn-lkXDKsPp_rWmDDZVFQfax7k" />
-<title>Openline — Free Random Video Chat</title>
-<meta name="description" content="Openline is a free random video chat — meet new people one-on-one on live video, or team up with a friend in Party Mode. Moderated, 18+, no signup." />
+<title>Olumie — Free Random Video Chat</title>
+<meta name="description" content="Olumie is a free random video chat — meet new people one-on-one on live video, or team up with a friend in Party Mode. Moderated, 18+, no signup." />
 <meta name="theme-color" content="#0d1117" />
 <link rel="canonical" href="https://random-video-chat-azkk.onrender.com/" />
 <meta property="og:type" content="website" />
-<meta property="og:title" content="Openline — Free Random Video Chat" />
+<meta property="og:title" content="Olumie — Free Random Video Chat" />
 <meta property="og:description" content="Meet new people on live video, solo or with a friend in Party Mode. Moderated, 18+, no signup." />
 <meta property="og:url" content="https://random-video-chat-azkk.onrender.com/" />
 <meta name="twitter:card" content="summary" />
-<meta name="twitter:title" content="Openline — Free Random Video Chat" />
+<meta name="twitter:title" content="Olumie — Free Random Video Chat" />
 <meta name="twitter:description" content="Meet new people on live video, solo or with a friend in Party Mode. Moderated, 18+, no signup." />
 
 <!-- In-browser NSFW detection (free, no API key). tfjs is the ML engine;
@@ -165,12 +165,12 @@
 </style>
 </head>
 <body class="c-root c-stage" data-state="idle">
-<h1 class="sr-only">Openline — free random video chat with strangers, one-on-one or with a friend in Party Mode</h1>
+<h1 class="sr-only">Olumie — free random video chat with strangers, one-on-one or with a friend in Party Mode</h1>
 <div class="shell">
 
   <!-- Status bar -->
   <div class="statusbar">
-    <div class="brand"><span class="logo"></span><span class="name">Openline</span></div>
+    <div class="brand"><span class="logo"></span><span class="name">Olumie</span></div>
     <div class="center">
       <span class="c-badge c-badge--online is-hidden" id="connBadge"><span class="c-dot c-dot--live"></span> <span id="connTime">Connected · 00:00</span></span>
       <span class="c-badge is-hidden" id="searchingPill"><span class="c-spinner"></span> Looking for people…</span>
@@ -330,7 +330,7 @@
   <div class="age-card">
     <div class="age-logo"></div>
     <h2 class="c-h2">Before you start</h2>
-    <p class="c-body c-muted" style="font-size:var(--fs-sm)">Openline connects you with random people on live video. By entering, you confirm:</p>
+    <p class="c-body c-muted" style="font-size:var(--fs-sm)">Olumie connects you with random people on live video. By entering, you confirm:</p>
     <ul class="age-list">
       <li>You are <strong>18 or older</strong>.</li>
       <li>No <strong>nudity, harassment, or illegal content</strong> — ever.</li>
@@ -796,10 +796,10 @@ els.reportSubmit.addEventListener('click', () => {
 
 // --- Age / rules gate -----------------------------------------------------
 function initAgeGate() {
-  let ok = false; try { ok = localStorage.getItem('openline_age_ok') === '1'; } catch {}
+  let ok = false; try { ok = localStorage.getItem('olumie_age_ok') === '1'; } catch {}
   if (!ok) els.ageGate.classList.add('show');
 }
-els.ageAccept.addEventListener('click', () => { try { localStorage.setItem('openline_age_ok', '1'); } catch {} els.ageGate.classList.remove('show'); });
+els.ageAccept.addEventListener('click', () => { try { localStorage.setItem('olumie_age_ok', '1'); } catch {} els.ageGate.classList.remove('show'); });
 els.ageLeave.addEventListener('click', () => { window.location.href = 'https://www.google.com'; });
 
 // --- Boot -----------------------------------------------------------------
