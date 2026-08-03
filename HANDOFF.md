@@ -50,7 +50,24 @@ people together with a friend). Monetized by a **Premium** subscription.
 
 ## Services (see the in-app services console the user has)
 GitHub · Render · Supabase · Stripe (**test mode**) · Discord (moderation feed) ·
-Resend (SMTP for auth emails) · Google Search Console.
+Resend (SMTP for auth emails) · Google Search Console · Google Cloud (OAuth client).
+
+## What it costs (checked 2026-08-03 — re-verify before committing)
+**Everything is on a free tier today: $0/mo.** At launch: **~$10/mo minimum**,
+**~$45/mo polished**. Stripe sits outside those totals — no monthly fee, it takes
+a cut per charge.
+
+| Service | Now | At launch | Notes |
+|---|---|---|---|
+| Render | Free | **$7/mo** | Starter. Effectively mandatory — free tier sleeps after ~15 min, so the first visitor waits ~1 min and Stripe webhooks hit a cold instance. |
+| Supabase | Free | **$0–35/mo** | Free (500 MB, 50k MAU) genuinely covers launch. Pro $25 + custom domain $10 buys only the auth-domain fix below. Free projects pause after ~1 week idle. |
+| Stripe | $0 | **2.9% + 30¢** | Per charge, +0.7% if using Billing. No monthly fee — you pay only when you earn. |
+| Domain `olumie.chat` | — | **~$38/yr** | ⚠ `.chat` renews far above its signup price (~$6 first year). Compare **renewal** columns, not headline prices. |
+| TURN relay | — | Free <1 TB | Cloudflare: 1,000 GB/mo free, then $0.05/GB. Likely stays free at this scale. |
+| Resend · Google Cloud · GitHub · Search Console · Discord | Free | **Free** | No paid tier needed. Resend free = 3,000 emails/mo (100/day), 1 domain — domain verification is included. |
+
+Free-and-staying-free dependencies: NSFWJS, TensorFlow.js, jsDelivr, Google Fonts,
+Google STUN.
 
 ## Env vars on Render (config is read from env; app is inert without it)
 Set: `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SECRET_KEY`,
@@ -71,6 +88,12 @@ classic (`ANON_KEY`/`SERVICE_KEY`) names.
 - ✅ **Premium loop VERIFIED end-to-end (2026-08-03):** subscribe with test card
   `4242 4242 4242 4242` → `profiles.is_premium = true` → gender filter unlocks →
   cancel flips it back. `stripe_customer_id` confirmed present on the live table.
+- ✅ **Google sign-in LIVE (2026-08-03, PR #21).** Provider enabled on the Supabase
+  project; the button auto-unhides via `/auth/v1/settings` (no redeploy needed to
+  turn it on/off). Handshake verified as far as Google's account picker. Magic link
+  remains as the fallback. Why it was added: magic link costs an email round trip
+  on every new browser, and iOS Safari evicts the stored session after ~7 days —
+  that round trip sat inside the upgrade funnel.
 - ✅ **The webhook now fails loudly** (PR #20). It used to answer 200 even when it
   wrote nothing: `.update().eq('id', …)` matches zero rows on a missing `profiles`
   row and reports success, and DB errors were swallowed by a catch that still
@@ -79,11 +102,17 @@ classic (`ANON_KEY`/`SERVICE_KEY`) names.
   clears `socket.isPremium` server-side, which previously survived until reconnect.
 
 ## Next steps
-1. **Enable Google OAuth** in the Supabase dashboard — the code is already live,
-   the button unhides itself once the provider is on. Steps in `SUPABASE.md`.
-   (Google Cloud OAuth client → paste ID/secret into Supabase → reload. No deploy.)
+1. **Finish Google sign-in.** Provider is ENABLED and the button is live
+   (`external.google: true`); the OAuth handshake reaches Google's account picker,
+   so the Client ID + redirect URI are correct. Remaining: (a) add your own account
+   under **Audience → Test users** or Google blocks your own sign-in while the app
+   is in Testing, (b) **Publish app** before real users — the test-user list caps at
+   100. Publishing with only `email`/`profile`/`openid` (all non-sensitive) does
+   **not** trigger Google's verification review.
 2. **Real-device testing** (2+ people, different networks) — party mode + whether
    cross-network video connects without TURN (that's the signal to enable TURN).
+   Free, needs no approvals, and it's the last unknown about whether the core
+   product works between two strangers. Do this before spending anything.
 3. **Go live:** Stripe business verification (⚠ high-risk category — may be
    declined; fallback = a high-risk processor), then a **live** Payment Link +
    live keys, and swap the 3 Stripe env vars. Verify a Resend domain for real
@@ -92,6 +121,16 @@ classic (`ANON_KEY`/`SERVICE_KEY`) names.
    purchase: Render custom domain + update the URL in `robots.txt`, `sitemap.xml`,
    `<link rel=canonical>`, `og:url`, `SUPABASE_URL`/redirect settings, and add a
    new Search Console property.
+   **Do the Supabase custom domain in the same sitting.** Google's account picker
+   shows the redirect target's domain, so today it reads *"to continue to
+   yyterkkuqceodisnhehu.supabase.co"* — a random ref that looks like phishing to a
+   consumer. A Supabase custom domain moves auth to e.g. `auth.olumie.chat` and the
+   prompt names that instead. It's a paid add-on ($10/mo) **and needs Pro ($25/mo)**,
+   so ~$35/mo total. Nothing in the Google consent screen config changes that line —
+   app name/logo only affect the *permission* screen after account choice. The
+   redirect URI must change at the same moment as the domain or sign-in breaks, so
+   these are one coordinated change, not two. Treat it as a launch-blocker for the
+   paid tier, not cosmetic — people bounce off sketchy Google prompts.
 5. **Deferred:** ad-free (needs an ad system + a category-friendly ad network —
    mainstream networks reject this category, like payment processors), a TURN
    server, priority matching, more Premium perks.
