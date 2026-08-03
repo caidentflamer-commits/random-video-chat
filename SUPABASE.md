@@ -49,7 +49,9 @@ nothing to deploy after you finish these steps — just reload.
    as test users can sign in — hit **Publish app** when you're ready for everyone.
 3. **APIs & Services → Credentials → Create credentials → OAuth client ID** →
    type **Web application**.
-   - **Authorised JavaScript origins:** `https://random-video-chat-azkk.onrender.com`
+   - **Authorised JavaScript origins:** `https://olumie.chat` **and**
+     `https://random-video-chat-azkk.onrender.com` (keep both — Render serves the
+     old URL too, and sign-in breaks on whichever origin is missing)
    - **Authorised redirect URI:** `https://<your-project-ref>.supabase.co/auth/v1/callback`
      (Supabase shows this exact URL on the Google provider page — copy it from there.)
 4. Copy the **Client ID** and **Client secret**.
@@ -61,8 +63,11 @@ Also check **Authentication → URL Configuration**: **Site URL** must be the
 Render URL (not localhost), and the redirect allow-list should include it — the
 same requirement magic link already has.
 
-> On a custom domain later (`olumie.chat`), add it to the Google origins list and
-> to Supabase's Site URL / redirect allow-list, or sign-in breaks on the new domain.
+> **Moving to `olumie.chat`:** add it to the Google **JavaScript origins** list and
+> to Supabase's **Site URL** / redirect allow-list, or sign-in breaks on the new
+> domain. The Google **redirect URI** does *not* change — it points at
+> `…supabase.co/auth/v1/callback`, which only moves if you buy Supabase's custom
+> domain add-on. That's the field most likely to get "fixed" by mistake; leave it.
 
 ## How it works once configured
 

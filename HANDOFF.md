@@ -16,7 +16,9 @@ people together with a friend). Monetized by a **Premium** subscription.
   server for signaling/matchmaking/moderation. Deps: `ws`, `@supabase/supabase-js`, `stripe`.
 - **Host:** Render free tier. **Push to `main` → auto-deploys.** Free tier **sleeps
   after ~15 min idle** (first hit / webhook after idle is delayed; Stripe retries).
-- **Live URL:** `https://random-video-chat-azkk.onrender.com`
+- **Live URL:** `https://olumie.chat` (bought 2026-08-03 via Sav; auto-renew ~$28/yr).
+  Render's `https://random-video-chat-azkk.onrender.com` keeps working — both
+  resolve, but `olumie.chat` is canonical in the SEO tags.
 - **Repo:** `github.com/caidentflamer-commits/random-video-chat`
 - **Design:** Clarity design system (dark "stage"), `public/clarity.css`.
 
@@ -128,10 +130,19 @@ classic (`ANON_KEY`/`SERVICE_KEY`) names.
    swap the 3 Stripe env vars, verify a Resend domain for real auth emails, and
    pay for **Render Starter ($7/mo)** so the app stops sleeping — a cold start on
    a video-chat app loses the visitor, and it delays Stripe webhooks.
-4. **Custom domain:** `olumie.chat` is available (`.com` is taken/parked). On
-   purchase: Render custom domain + update the URL in `robots.txt`, `sitemap.xml`,
-   `<link rel=canonical>`, `og:url`, `SUPABASE_URL`/redirect settings, and add a
-   new Search Console property.
+4. **Custom domain — BOUGHT 2026-08-03** (`olumie.chat`, Sav; `.com` is taken).
+   Code side is done (canonical, `og:url`, `robots.txt`, `sitemap.xml`). Remaining,
+   **in this order** — merge the code change only once DNS resolves, or the tags
+   point at a dead host:
+   a. Render → Settings → Custom Domain → add `olumie.chat` + `www`, copy its DNS
+      target, add the records at Sav, wait for Render to go **Verified**.
+   b. Google Cloud → Clients → add `https://olumie.chat` to **JavaScript origins**.
+      Leave the **redirect URI** alone (see `SUPABASE.md`).
+   c. Supabase → Authentication → URL Configuration → **Site URL** = the new domain,
+      add it to the redirect allow-list. Keep the Render URL listed too.
+   d. Search Console → add a **Domain** property (DNS TXT) now that we control DNS.
+   e. Stripe → update the business URL if the application is still open.
+   Keep the `.onrender.com` URL working; it costs nothing and avoids dead links.
    **Do the Supabase custom domain in the same sitting.** Google's account picker
    shows the redirect target's domain, so today it reads *"to continue to
    yyterkkuqceodisnhehu.supabase.co"* — a random ref that looks like phishing to a

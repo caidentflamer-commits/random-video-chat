@@ -3,9 +3,17 @@
 How Olumie is set up in Google Search Console (so search engines find it), and
 how to redo it if the URL changes.
 
-**Live URL:** `https://random-video-chat-azkk.onrender.com`
-(Confirm in the Render dashboard → service page. If you move to a custom domain,
-see "If the URL changes" at the bottom.)
+**Live URL:** `https://olumie.chat`
+(Render still serves `https://random-video-chat-azkk.onrender.com` as well — it
+keeps working, but the custom domain is canonical. Confirm in the Render
+dashboard → service page.)
+
+> **On a custom domain you can now use a Domain property.** The note below about
+> being stuck with "URL prefix" applied to the `.onrender.com` subdomain, where
+> we had no DNS access. With `olumie.chat` you control DNS, so a **Domain**
+> property is the better choice — it covers http/https and every subdomain in
+> one, verified by a TXT record at the registrar. Keep the existing URL-prefix
+> property too until the new one has data.
 
 ## What's already in the code
 
@@ -35,8 +43,9 @@ see "If the URL changes" at the bottom.)
 
 - **Pages** (or "Coverage"): shows what Google has indexed and any errors.
 - **Performance**: impressions/clicks once you're ranking.
-- Quick check anytime: search Google for
-  `site:random-video-chat-azkk.onrender.com` — indexed pages show up there.
+- Quick check anytime: search Google for `site:olumie.chat` — indexed pages show
+  up there. (`site:random-video-chat-azkk.onrender.com` still works for anything
+  indexed under the old URL.)
 
 ## What to expect
 
