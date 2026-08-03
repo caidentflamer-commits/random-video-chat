@@ -541,10 +541,23 @@ function openUpgrade() {
     toast('Opening secure checkout…');
   } catch { window.open(premiumUrl, '_blank', 'noopener'); }
 }
-// After returning from checkout, re-check premium status.
-document.addEventListener('visibilitychange', () => {
-  if (!document.hidden && authToken && ws && ws.readyState === ws.OPEN) wsSend({ type: 'auth', token: authToken });
-});
+// Re-check premium straight from the profiles row (RLS lets you read your own).
+// Going through the database rather than the socket means this still works with
+// no session open — e.g. tabbing back after subscribing or cancelling on idle.
+async function refreshPremium() {
+  if (!sb || !authUser) return;
+  try {
+    const { data } = await sb.from('profiles').select('is_premium').eq('id', authUser.id).maybeSingle();
+    if (data) {
+      isPremium = !!data.is_premium;
+      renderIdleInterests();
+      if (!els.filtersModal.classList.contains('is-hidden')) renderFilterOptions();
+    }
+  } catch {}
+  wsSend({ type: 'auth', token: authToken });   // keep the server's copy in sync (it's the enforcer)
+}
+// After returning from checkout (or the Stripe portal), re-check premium status.
+document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshPremium(); });
 function openFilters() { renderFilterOptions(); show(els.filtersModal, true); }
 function closeFilters() { show(els.filtersModal, false); renderIdleInterests(); if (phase === 'searching') wsSend({ type: 'ready', ...matchPayload() }); }
 
@@ -922,12 +935,21 @@ function applySession(session) {
   authUser = (session && session.user) || null;
   els.authBtn.textContent = authUser ? (authUser.email ? authUser.email.split('@')[0] : 'Account') : 'Sign in';
   els.authBtn.title = authUser ? 'Signed in — click to sign out' : 'Sign in';
-  if (authToken && ws && ws.readyState === ws.OPEN) wsSend({ type: 'auth', token: authToken });
+  if (authToken) { wsSend({ type: 'auth', token: authToken }); refreshPremium(); }
+  else { isPremium = false; renderIdleInterests(); }   // signed out → relock the gender filter
 }
 function openAuth() { show(els.authMsg, false); show(els.authModal, true); els.authEmail.focus(); }
 function closeAuth() { show(els.authModal, false); }
 els.authBtn.addEventListener('click', async () => {
-  if (authUser && sb) { try { await sb.auth.signOut(); } catch {} isPremium = false; toast('Signed out.'); return; }
+  if (authUser && sb) {
+    try { await sb.auth.signOut(); } catch {}
+    isPremium = false;
+    wsSend({ type: 'auth', token: null });   // drop the account server-side too, not just here
+    renderIdleInterests();
+    if (!els.filtersModal.classList.contains('is-hidden')) renderFilterOptions();
+    toast('Signed out.');
+    return;
+  }
   openAuth();
 });
 els.authCancel.addEventListener('click', closeAuth);
