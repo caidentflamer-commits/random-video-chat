@@ -94,6 +94,16 @@ classic (`ANON_KEY`/`SERVICE_KEY`) names.
   remains as the fallback. Why it was added: magic link costs an email round trip
   on every new browser, and iOS Safari evicts the stored session after ~7 days —
   that round trip sat inside the upgrade funnel.
+- ✅ **REAL-DEVICE TESTING PASSED (2026-08-03)** — all four cases: solo 1-on-1
+  across **different networks** (Wi-Fi ↔ cellular), Party Mode (4-char code join,
+  "Find people" together, Next keeping friends together), and mobile browsers.
+  **Video connects on STUN alone — no TURN needed.** So `TURN_*` stays unset and
+  the relay costs nothing for now.
+  ⚠ Caveat: this is one pair of networks, not proof. NAT behaviour varies by
+  carrier and router, and a minority of real-world pairs typically still need a
+  relay. The plumbing is already built (`/ice`, `TURN.md`) — if users report a
+  black remote tile while chat still works, that's the signal to switch it on.
+  Cloudflare's first 1,000 GB/mo is free, so enabling it is cheap insurance.
 - ✅ **The webhook now fails loudly** (PR #20). It used to answer 200 even when it
   wrote nothing: `.update().eq('id', …)` matches zero rows on a missing `profiles`
   row and reports success, and DB errors were swallowed by a catch that still
@@ -109,14 +119,15 @@ classic (`ANON_KEY`/`SERVICE_KEY`) names.
    is in Testing, (b) **Publish app** before real users — the test-user list caps at
    100. Publishing with only `email`/`profile`/`openid` (all non-sensitive) does
    **not** trigger Google's verification review.
-2. **Real-device testing** (2+ people, different networks) — party mode + whether
-   cross-network video connects without TURN (that's the signal to enable TURN).
-   Free, needs no approvals, and it's the last unknown about whether the core
-   product works between two strangers. Do this before spending anything.
-3. **Go live:** Stripe business verification (⚠ high-risk category — may be
-   declined; fallback = a high-risk processor), then a **live** Payment Link +
-   live keys, and swap the 3 Stripe env vars. Verify a Resend domain for real
-   auth emails.
+2. **Start Stripe business verification NOW** — it is the long pole and the only
+   item that can block launch outright. ⚠ High-risk category: it may be declined,
+   and the fallback is a high-risk processor charging well above 2.9%. Approval
+   takes days-to-weeks, so start it and do everything below while waiting. No
+   amount of money speeds this up.
+3. **Go live** (once verification clears): a **live** Payment Link + live keys,
+   swap the 3 Stripe env vars, verify a Resend domain for real auth emails, and
+   pay for **Render Starter ($7/mo)** so the app stops sleeping — a cold start on
+   a video-chat app loses the visitor, and it delays Stripe webhooks.
 4. **Custom domain:** `olumie.chat` is available (`.com` is taken/parked). On
    purchase: Render custom domain + update the URL in `robots.txt`, `sitemap.xml`,
    `<link rel=canonical>`, `og:url`, `SUPABASE_URL`/redirect settings, and add a
@@ -132,8 +143,9 @@ classic (`ANON_KEY`/`SERVICE_KEY`) names.
    these are one coordinated change, not two. Treat it as a launch-blocker for the
    paid tier, not cosmetic — people bounce off sketchy Google prompts.
 5. **Deferred:** ad-free (needs an ad system + a category-friendly ad network —
-   mainstream networks reject this category, like payment processors), a TURN
-   server, priority matching, more Premium perks.
+   mainstream networks reject this category, like payment processors), priority
+   matching, more Premium perks. **TURN is deferred on evidence now, not
+   assumption** — real-device testing showed STUN is enough (see Current status).
 
 ## Working conventions used this far
 - Change on a branch → PR → merge to `main` → Render deploys. (A few tiny fixes
