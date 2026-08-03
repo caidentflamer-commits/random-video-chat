@@ -33,8 +33,10 @@ people together with a friend). Monetized by a **Premium** subscription.
   report modal. Fail-safe (off if the model can't load).
 - **Report audit trail:** structured logs + `GET /admin/reports?key=ADMIN_KEY` +
   a **Discord webhook** (`REPORT_WEBHOOK_URL`) — working. Durable in Supabase.
-- **Accounts:** Supabase **magic-link** sign-in; server verifies tokens via
-  `supabase.auth.getUser()`. `profiles` table (`is_premium`, `stripe_customer_id`).
+- **Accounts:** Supabase sign-in — **Google OAuth** (one tap) + **magic link**
+  (fallback); server verifies tokens via `supabase.auth.getUser()`. `profiles`
+  table (`is_premium`, `stripe_customer_id`). The Google button is hidden until
+  the provider is enabled on the project (checked via `/auth/v1/settings`).
 - **Subscriptions:** `/stripe/webhook` (signature-verified) flips
   `profiles.is_premium` on subscribe / off on cancel. Upgrade opens the Stripe
   Payment Link with `client_reference_id=<userId>`. **Test mode, verified wired.**
@@ -66,14 +68,20 @@ classic (`ANON_KEY`/`SERVICE_KEY`) names.
   only delivers to the Resend-account email until a domain is verified.
 - ✅ Stripe webhook + premium link wired in **test mode** (`/config` serves
   `premiumUrl`; webhook returns 400 to unsigned POSTs = verifying signatures).
-- ⏳ **Not yet confirmed end-to-end:** subscribe with test card
+- ✅ **Premium loop VERIFIED end-to-end (2026-08-03):** subscribe with test card
   `4242 4242 4242 4242` → `profiles.is_premium = true` → gender filter unlocks →
-  cancel flips it back. (Requires the `stripe_customer_id` column — added via
-  `db/schema.sql` ALTER.)
+  cancel flips it back. `stripe_customer_id` confirmed present on the live table.
+- ✅ **The webhook now fails loudly** (PR #20). It used to answer 200 even when it
+  wrote nothing: `.update().eq('id', …)` matches zero rows on a missing `profiles`
+  row and reports success, and DB errors were swallowed by a catch that still
+  returned 200 (mislabelled `bad signature`). Now: upsert; **400** = bad signature
+  (permanent), **500** = handler failure (Stripe retries, shows red). Sign-out also
+  clears `socket.isPremium` server-side, which previously survived until reconnect.
 
 ## Next steps
-1. **Verify the premium loop end-to-end** (sign in → Upgrade → test-card subscribe
-   → gender filter unlocks; check Stripe webhook delivery = 200 + `profiles` row).
+1. **Enable Google OAuth** in the Supabase dashboard — the code is already live,
+   the button unhides itself once the provider is on. Steps in `SUPABASE.md`.
+   (Google Cloud OAuth client → paste ID/secret into Supabase → reload. No deploy.)
 2. **Real-device testing** (2+ people, different networks) — party mode + whether
    cross-network video connects without TURN (that's the signal to enable TURN).
 3. **Go live:** Stripe business verification (⚠ high-risk category — may be
