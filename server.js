@@ -68,24 +68,33 @@ if (process.env.SUPABASE_URL && SUPABASE_SECRET) {
 // ---- Stripe (Premium subscriptions) --------------------------------------
 // Inert unless STRIPE_SECRET_KEY is set. The webhook flips profiles.is_premium.
 const stripe = process.env.STRIPE_SECRET_KEY ? require('stripe')(process.env.STRIPE_SECRET_KEY) : null;
+// THROWS on a genuine write failure so the webhook answers 500 and Stripe shows
+// a failed delivery (and retries). A green 200 that silently wrote nothing is
+// the worst possible outcome to debug.
 async function handleStripeEvent(event) {
   if (!supa) return;
-  try {
-    if (event.type === 'checkout.session.completed') {
-      const s = event.data.object;
-      if (s.client_reference_id) {   // = the Supabase user id we appended to the link
-        await supa.from('profiles').update({ is_premium: true, stripe_customer_id: s.customer || null }).eq('id', s.client_reference_id);
-        console.log('Premium ON:', s.client_reference_id);
-      }
-    } else if (event.type === 'customer.subscription.deleted' ||
-      (event.type === 'customer.subscription.updated' && ['canceled', 'unpaid', 'incomplete_expired'].includes(event.data.object.status))) {
-      const customer = event.data.object.customer;
-      if (customer) {
-        await supa.from('profiles').update({ is_premium: false }).eq('stripe_customer_id', customer);
-        console.log('Premium OFF for customer:', customer);
-      }
-    }
-  } catch (e) { console.warn('stripe event handler:', e.message); }
+  if (event.type === 'checkout.session.completed') {
+    const s = event.data.object;
+    const userId = s.client_reference_id;   // = the Supabase user id we appended to the link
+    if (!userId) { console.warn('stripe: checkout completed with no client_reference_id — cannot map it to a user'); return; }
+    // Upsert, not update: with no profiles row, .update() matches zero rows and
+    // still reports success, leaving is_premium false with no error anywhere.
+    const { error } = await supa.from('profiles')
+      .upsert({ id: userId, is_premium: true, stripe_customer_id: s.customer || null }, { onConflict: 'id' });
+    if (error) throw new Error(`profiles upsert failed for user ${userId}: ${error.message}`);
+    // Without a customer id the cancel path below can never find this row again.
+    if (!s.customer) console.warn(`stripe: no customer on session for ${userId} — cancel will not be able to match them`);
+    console.log(`Premium ON: ${userId} (customer ${s.customer || 'none'})`);
+  } else if (event.type === 'customer.subscription.deleted' ||
+    (event.type === 'customer.subscription.updated' && ['canceled', 'unpaid', 'incomplete_expired'].includes(event.data.object.status))) {
+    const customer = event.data.object.customer;
+    if (!customer) return;
+    const { data, error } = await supa.from('profiles')
+      .update({ is_premium: false }).eq('stripe_customer_id', customer).select('id');
+    if (error) throw new Error(`premium-off update failed for customer ${customer}: ${error.message}`);
+    if (!data || !data.length) console.warn(`stripe: no profile matched customer ${customer} — premium NOT cleared`);
+    else console.log(`Premium OFF for customer ${customer} → user ${data.map((r) => r.id).join(',')}`);
+  }
 }
 async function dbInsertBan(ip, reason) {
   if (!supa || !ip) return;
@@ -113,14 +122,27 @@ async function dbInsertReport(rec) {
 // user to the socket. Anonymous users simply never send this. Best-effort:
 // any failure just leaves the socket anonymous.
 async function handleAuth(socket, token) {
-  if (!supa || typeof token !== 'string' || !token) return;
+  if (!supa) return;
+  // A null/empty token means "signed out" — drop the account from this socket so
+  // premium gating stops right away instead of lingering until they reconnect.
+  if (typeof token !== 'string' || !token) {
+    if (socket.userId) console.log(`Signed out ${socket.peerId} (${socket.userId})`);
+    socket.userId = null;
+    socket.isPremium = false;
+    send(socket, { type: 'account', email: null, premium: false });
+    return;
+  }
   try {
     const { data, error } = await supa.auth.getUser(token);
     if (error || !data || !data.user) return;
     socket.userId = data.user.id;
+    // Guarantee the profiles row exists. The signup trigger normally creates it,
+    // but a user who signed up before the trigger existed has none — and then
+    // both the premium read below and the Stripe webhook silently see nothing.
+    try { await supa.from('profiles').upsert({ id: socket.userId }, { onConflict: 'id', ignoreDuplicates: true }); } catch (e) { console.warn('profile ensure:', e.message); }
     let premium = false;
     try {
-      const { data: prof } = await supa.from('profiles').select('is_premium').eq('id', socket.userId).single();
+      const { data: prof } = await supa.from('profiles').select('is_premium').eq('id', socket.userId).maybeSingle();
       premium = !!(prof && prof.is_premium);
     } catch {}
     socket.isPremium = premium;   // gates gender-preference filtering server-side
@@ -148,11 +170,22 @@ const server = http.createServer((req, res) => {
     const chunks = [];
     req.on('data', (c) => chunks.push(c));
     req.on('end', async () => {
+      // Two distinct failures, two distinct codes: a bad signature is permanent
+      // (400, Stripe won't retry), a failed DB write is worth retrying (500).
+      let event;
       try {
-        const event = stripe.webhooks.constructEvent(Buffer.concat(chunks), req.headers['stripe-signature'], process.env.STRIPE_WEBHOOK_SECRET);
+        event = stripe.webhooks.constructEvent(Buffer.concat(chunks), req.headers['stripe-signature'], process.env.STRIPE_WEBHOOK_SECRET);
+      } catch (e) {
+        console.warn('stripe webhook signature error:', e.message);
+        res.writeHead(400); return res.end('bad signature');
+      }
+      try {
         await handleStripeEvent(event);
         res.writeHead(200); res.end('ok');
-      } catch (e) { console.warn('stripe webhook error:', e.message); res.writeHead(400); res.end('bad signature'); }
+      } catch (e) {
+        console.error(`stripe handler error (${event.type}):`, e.message);
+        res.writeHead(500); res.end('handler error');
+      }
     });
     return;
   }
