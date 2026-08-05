@@ -29,6 +29,10 @@ const { WebSocketServer } = require('ws');
 const PORT = process.env.PORT || 3000;
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
+// Hosts we'll send a user back to after the Stripe portal. Anything else falls
+// back to the canonical domain, so the return URL can't be steered by a caller.
+const RETURN_HOSTS = new Set(['olumie.chat', 'www.olumie.chat', 'random-video-chat-azkk.onrender.com']);
+
 // ---- ICE / TURN config (from env, never committed) ------------------------
 // Direct P2P (STUN) works for most 1-on-1s; a TURN relay is needed when a peer
 // sits behind a strict/symmetric NAT (common on mobile data & some Wi-Fi) and
@@ -185,6 +189,41 @@ const server = http.createServer((req, res) => {
       } catch (e) {
         console.error(`stripe handler error (${event.type}):`, e.message);
         res.writeHead(500); res.end('handler error');
+      }
+    });
+    return;
+  }
+
+  // Stripe customer portal — lets a subscriber cancel or update their card
+  // themselves. Without it the only exits are emailing us or filing a dispute,
+  // and dispute rate is what gets a high-risk merchant terminated.
+  // Auth is the caller's Supabase token; we look the customer up server-side so
+  // a caller can never name someone else's Stripe customer.
+  if (req.method === 'POST' && urlPath === '/portal') {
+    const fail = (code, error) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error })); };
+    if (!stripe || !supa) return fail(503, 'not configured');
+    const chunks = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', async () => {
+      try {
+        let body = {};
+        try { body = JSON.parse(Buffer.concat(chunks).toString() || '{}'); } catch {}
+        const { data, error } = await supa.auth.getUser(String(body.token || ''));
+        if (error || !data || !data.user) return fail(401, 'not signed in');
+        const { data: prof } = await supa.from('profiles').select('stripe_customer_id').eq('id', data.user.id).maybeSingle();
+        if (!prof || !prof.stripe_customer_id) return fail(404, 'no subscription found');
+        // Return URL comes from the request host, never from the caller — an
+        // attacker-supplied one would turn this into an open redirect.
+        const host = String(req.headers.host || '').toLowerCase();
+        const returnUrl = RETURN_HOSTS.has(host) ? `https://${host}/` : 'https://olumie.chat/';
+        const session = await stripe.billingPortal.sessions.create({ customer: prof.stripe_customer_id, return_url: returnUrl });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ url: session.url }));
+      } catch (e) {
+        // The usual cause is the portal not being activated in the Stripe
+        // dashboard (Settings -> Billing -> Customer portal).
+        console.error('portal:', e.message);
+        fail(500, 'could not open the subscription page');
       }
     });
     return;
