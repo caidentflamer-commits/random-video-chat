@@ -48,6 +48,13 @@ people together with a friend). Monetized by a **Premium** subscription.
   verified** (tag in `<head>` — don't remove).
 - **TURN:** `/ice` serves ICE config from env; **STUN-only today**, TURN plumbing
   ready (see `TURN.md`).
+- **Manage/cancel subscription:** `POST /portal` verifies the caller's Supabase
+  token, looks up their `stripe_customer_id` server-side, and returns a Stripe
+  **billing-portal** URL. A "Subscription" button appears in the status bar only
+  for signed-in premium users. Self-serve cancellation exists so people cancel
+  instead of filing disputes — dispute rate is what gets a high-risk merchant
+  terminated. ⚠ Needs the portal **activated once** in Stripe → Settings →
+  Billing → **Customer portal**, or the API call errors (server logs `portal:`).
 - **Support tip button:** hidden unless `SUPPORT_URL` (a constant in index.html) is set.
 
 ## Services (see the in-app services console the user has)

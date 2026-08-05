@@ -181,6 +181,8 @@
     </div>
     <div class="right">
       <button class="c-btn c-btn--secondary c-btn--sm is-hidden" id="authBtn">Sign in</button>
+      <!-- Only shown to signed-in subscribers; opens Stripe's hosted portal. -->
+      <button class="c-btn c-btn--ghost c-btn--sm is-hidden" id="manageBtn" title="Manage or cancel your subscription">Subscription</button>
       <span class="shield" id="shield" title="Safety checks on">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--online)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 5 6v5.5c0 4.4 2.9 8.2 7 9.5 4.1-1.3 7-5.1 7-9.5V6l-7-3Z"/><path d="m9 12 2.2 2.2L15.5 10"/></svg>
       </span>
@@ -431,7 +433,7 @@ const els = {
   ageGate: $('ageGate'), ageAccept: $('ageAccept'), ageLeave: $('ageLeave'), genderChoose: $('genderChoose'),
   authBtn: $('authBtn'), authModal: $('auth-modal'), authBackdrop: $('authBackdrop'), authEmail: $('authEmail'),
   authMsg: $('authMsg'), authCancel: $('authCancel'), authSend: $('authSend'),
-  authGoogle: $('authGoogle'), authOr: $('authOr'),
+  authGoogle: $('authGoogle'), authOr: $('authOr'), manageBtn: $('manageBtn'),
 };
 
 let localStream = null, ws = null;
@@ -619,7 +621,12 @@ function renderIdleInterests() {
   const gc = document.createElement('button'); gc.type = 'button'; gc.className = 'c-chip' + (myGenderPref !== 'any' ? ' is-selected' : '');
   gc.textContent = 'Meet: ' + genderPrefLabel(myGenderPref) + (isPremium ? '' : ' 🔒') + ' ▾';
   gc.addEventListener('click', openFilters); els.idleInterests.appendChild(gc);
+  updateAccountUi();
 }
+// The "Subscription" button only means anything to a signed-in subscriber.
+// Called from renderIdleInterests because every place isPremium changes already
+// calls that — one hook instead of four that can drift apart.
+function updateAccountUi() { show(els.manageBtn, !!(authUser && isPremium)); }
 renderIdleInterests();
 function openInterests() { show(els.interestsModal, true); els.tagSearch.focus(); }
 function closeInterests() { show(els.interestsModal, false); if (phase === 'searching') wsSend({ type: 'ready', ...matchPayload() }); }
@@ -979,6 +986,21 @@ els.authBtn.addEventListener('click', async () => {
 });
 els.authCancel.addEventListener('click', closeAuth);
 els.authBackdrop.addEventListener('click', closeAuth);
+// Cancel / update card, on Stripe's own hosted page. The server resolves the
+// Stripe customer from the signed-in user, so nothing identifying is sent here.
+els.manageBtn.addEventListener('click', async () => {
+  if (!authToken) return;
+  els.manageBtn.classList.add('is-loading');
+  try {
+    const r = await fetch('/portal', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: authToken }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok && j.url) { location.href = j.url; return; }   // leaving the page; keep the spinner
+    toast(r.status === 404 ? 'No subscription found on this account.' : 'Couldn’t open the subscription page — try again.');
+  } catch { toast('Couldn’t open the subscription page — try again.'); }
+  els.manageBtn.classList.remove('is-loading');
+});
 // Google: one tap, and it re-authenticates on any device — no email round trip
 // sitting in the middle of the upgrade funnel. Redirects away on success, so we
 // only clear the loading state if it fails.
