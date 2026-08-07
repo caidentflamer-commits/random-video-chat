@@ -66,10 +66,17 @@ people together with a friend). Monetized by a **Premium** subscription.
 
 ## Services (see the in-app services console the user has)
 GitHub · Render · Supabase · Stripe (**LIVE mode, approved**) · Discord (moderation
-feed) · Resend (SMTP for auth emails) · Google Search Console · Google Cloud (OAuth
-client) · **Cloudflare (DNS for `olumie.chat`)** · Sav (registrar).
+feed) · Resend (SMTP for auth emails, `olumie.chat` **verified**) · Google Search
+Console · Google Cloud (OAuth client) · **Sav (registrar AND where DNS records are
+managed)**.
 
-⚠ **Cloudflare records must stay DNS-only (grey cloud).** Proxying breaks the
+⚠ **DNS is edited at Sav, not Cloudflare.** A lookup shows Cloudflare nameservers
+(`cheryl/logan.ns.cloudflare.com`) because Sav uses Cloudflare as its DNS backend —
+there is **no Cloudflare account**. Records live in Sav → Manage DNS Settings →
+**Custom DNS Records**. This misled a whole session; don't go looking in Cloudflare.
+
+⚠ **Every DNS record's `Proxy` toggle in Sav must stay OFF**, and so must Sav's
+**SSL** and **DDoS Protection** switches. Proxying breaks the
 WebSocket signaling and rewrites `x-forwarded-for`, which corrupts the IP bans in
 `getClientIp()` — a shared proxy IP could ban unrelated users en masse.
 
@@ -102,9 +109,23 @@ classic (`ANON_KEY`/`SERVICE_KEY`) names.
 ## Current status
 - ✅ Durable bans/reports + Discord feed working.
 - ✅ **Magic-link sign-in works** (after switching Supabase to **Resend SMTP** —
-  the built-in email is rate-limited). Supabase **Site URL** must be the Render
-  URL or links die at localhost. Resend's shared `onboarding@resend.dev` sender
-  only delivers to the Resend-account email until a domain is verified.
+  the built-in email is rate-limited). Supabase **Site URL** must be the live URL
+  or links die at localhost.
+- ✅ **RESEND DOMAIN VERIFIED (2026-08-07) — magic link now works for everyone.**
+  `olumie.chat` is verified in Resend (us-east-1) and Supabase's SMTP sender is
+  `noreply@olumie.chat`. This closed a real gap: the previous shared
+  `onboarding@resend.dev` sender **only delivered to the Resend account owner**, so
+  every other person got "check your inbox" and nothing arrived. Google sign-in
+  masked it.
+  DNS (added at **Sav**, not Cloudflare — see Services): `resend._domainkey` TXT
+  (DKIM), `send` MX → `feedback-smtp.us-east-1.amazonses.com` pri **10**, `send`
+  TXT SPF, `_dmarc` TXT. All four confirmed resolving.
+  Verified by signing in with the owner's own address and confirming the mail came
+  **from `noreply@olumie.chat`**. Not tested: delivery to a non-owner address —
+  judged unnecessary, since that restriction is a property of the shared sender and
+  no longer applies once a domain is verified. **Resend → Emails is the safety
+  net**: a failed real-user link shows there as Bounced/Failed without them
+  reporting it.
 - ✅ **STRIPE APPROVED & LIVE (2026-08-07).** The high-risk category worry did not
   materialise. Account status shows *"No active tasks"*, payouts are **enabled and
   daily**, no restrictions. Live keys, live Payment Link
@@ -118,8 +139,8 @@ classic (`ANON_KEY`/`SERVICE_KEY`) names.
   never prove, since live uses a different webhook secret.
 - ✅ **Premium loop verified in test mode first (2026-08-03)** with card
   `4242 4242 4242 4242`; cancel flipped it back.
-- ✅ **`olumie.chat` IS LIVE (2026-08-04).** DNS moved to **Cloudflare**
-  nameservers; apex `A → 216.24.57.1` (Render), `www` CNAME → the Render host.
+- ✅ **`olumie.chat` IS LIVE (2026-08-04).** Sav's DNS (Cloudflare-backed
+  nameservers); apex `A → 216.24.57.1` (Render), `www` CNAME → the Render host.
   HTTPS + certificate issued by Render. Canonical/`og:url`/robots/sitemap all
   switched (PR #24). The Render URL still serves, so no dead links.
   Getting here was fiddly: Sav's "coming soon" parking nameservers had to be
@@ -179,11 +200,10 @@ whether to promote it.
    visitor waits ~a minute on a video-chat site and webhooks hit a cold instance.
    No reason to pay while it's only being tested.
 4. **Small tail, none blocking:** Search Console **Domain** property for
-   `olumie.chat` (we control DNS via Cloudflare now, so this is possible where it
-   wasn't before) · point Stripe's **business URL** at `olumie.chat` · clear
-   Stripe's **phone verification** prompt · verify a **Resend domain** so auth
-   emails stop coming from `onboarding@resend.dev` (which only delivers to the
-   Resend account owner — a real blocker once strangers sign up).
+   `olumie.chat` (we can add DNS TXT records at Sav now, so a Domain property is
+   possible where it wasn't on the Render subdomain) · point Stripe's **business
+   URL** at `olumie.chat` · clear
+   Stripe's **phone verification** prompt. (Resend domain — DONE, see status.)
 5. **Before promoting anywhere — moderation is now an ongoing commitment.** The
    automated stack is a filter, not a backstop; the Discord report feed needs a
    human, and that human is Caiden. In this category that includes the possibility
