@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<!-- data-theme="dark" is clarity.css's opt-in dark hook. The app is a dark stage,
+     so the legal pages match it rather than flashing white. -->
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Privacy Policy — Olumie</title>
+<meta name="description" content="What Olumie collects, what it doesn't, and who it shares data with. Video calls are peer-to-peer and never recorded." />
+<link rel="canonical" href="https://olumie.chat/privacy.html" />
+<meta name="robots" content="index,follow" />
+<link rel="stylesheet" href="clarity.css" />
+<link rel="stylesheet" href="legal.css" />
+</head>
+<body>
+<div class="legal-wrap">
+  <a class="legal-back" href="/">← Back to Olumie</a>
+
+  <h1>Privacy Policy</h1>
+  <p class="legal-updated">Last updated 7 August 2026</p>
+
+  <p>This explains what Olumie collects, what it deliberately doesn't, and who else
+  is involved. We've tried to describe what actually happens rather than write
+  something that covers every eventuality.</p>
+
+  <div class="legal-callout">
+    <p><strong>The part most people care about: we never record your video or audio.</strong>
+    Calls connect directly between browsers and don't pass through our servers. There
+    is nothing for us to store, hand over, or leak, because it never reaches us.</p>
+  </div>
+
+  <h2>What we don't collect</h2>
+  <ul>
+    <li><strong>Video and audio.</strong> Not recorded, not stored, not transmitted
+    through our servers. Connections are peer-to-peer (WebRTC).</li>
+    <li><strong>Your camera frames, for safety checks.</strong> The nudity detection
+    runs entirely inside your own browser. Frames are analysed on your device and are
+    never uploaded to us.</li>
+    <li><strong>Chat history.</strong> Text messages are relayed in real time and
+    aren't written to a database. Once a conversation ends, it's gone.</li>
+    <li><strong>Card details.</strong> Payments go directly to Stripe. We never see
+    your card number.</li>
+    <li><strong>Real names, phone numbers, or addresses.</strong> We don't ask.</li>
+  </ul>
+
+  <h2>What we do collect</h2>
+  <ul>
+    <li><strong>Your IP address.</strong> Our server necessarily sees it to connect
+    you. We store it only when a ban or a report is recorded — it's how bans work.</li>
+    <li><strong>Your email address</strong>, only if you choose to sign in. Signing in
+    is optional; Olumie works anonymously.</li>
+    <li><strong>Matching preferences</strong> — declared gender, gender preference,
+    interests, region, language. These are sent to the server to pair you with someone
+    and are held in memory for the session only, not written to a database.</li>
+    <li><strong>Subscription status.</strong> If you buy Premium we store your user id,
+    whether Premium is active, and an identifier from Stripe for your billing record.</li>
+    <li><strong>Reports.</strong> If you report someone or are reported, we record the
+    reason, any note, the IP addresses of both people, timestamps, and what action was
+    taken. This is how moderation works and how repeat offenders get caught.</li>
+  </ul>
+
+  <h2>Stored in your own browser</h2>
+  <p>We use your browser's local storage — not cookies for tracking — to remember that
+  you've accepted the age gate, your declared gender, and your matching preference.
+  Clearing your browser data removes them. We don't use advertising or analytics
+  trackers.</p>
+
+  <h2>Who else is involved</h2>
+  <p>Running Olumie means a handful of other companies process some data on our behalf:</p>
+  <ul>
+    <li><strong>Render</strong> — hosts the service; handles the traffic.</li>
+    <li><strong>Supabase</strong> — stores accounts, subscription status, bans and reports.</li>
+    <li><strong>Stripe</strong> — processes payments. Their privacy policy governs your
+    payment data.</li>
+    <li><strong>Resend</strong> — sends sign-in emails.</li>
+    <li><strong>Google</strong> — if you use "Continue with Google", it handles that
+    sign-in. Separately, your browser contacts Google's public STUN server to work out
+    how to connect you to another person, which means it sees your IP address. This is
+    standard for video calling.</li>
+    <li><strong>Discord</strong> — moderation reports are forwarded to a private
+    channel so they can be reviewed quickly. These messages include the IP addresses
+    recorded with the report.</li>
+    <li><strong>jsDelivr and Google Fonts</strong> — serve code and fonts to the page.</li>
+  </ul>
+  <p>We don't sell your data, and we don't share it for advertising.</p>
+
+  <h2>How long we keep things</h2>
+  <p>Bans and reports are kept for as long as they're useful for moderation — a ban
+  that expires isn't a ban. Account data is kept while your account exists. Anything
+  held only in memory for matching disappears when your session ends.</p>
+
+  <h2>Your choices</h2>
+  <ul>
+    <li>Use Olumie without an account. Most of it works anonymously.</li>
+    <li>Ask us for a copy of what we hold about you, or ask us to delete it, by
+    emailing <a href="mailto:olumiesupport@gmail.com">olumiesupport@gmail.com</a>.</li>
+    <li>Cancel Premium yourself at any time from the Subscription button.</li>
+  </ul>
+  <p>Depending on where you live you may have additional rights over your data, such as
+  correction or objection. Email us and we'll honour them.</p>
+  <p>One honest limit: we may keep a ban record even after an account is deleted.
+  Otherwise a ban could be erased by deleting an account, which would make moderation
+  meaningless.</p>
+
+  <h2>Children</h2>
+  <p>Olumie is strictly for people aged 18 and over. We don't knowingly collect data
+  from anyone under 18. If you believe a minor is using Olumie, report them in the app
+  or email us and we'll act on it.</p>
+
+  <h2>Security</h2>
+  <p>Video is encrypted in transit by WebRTC, and the site is served over HTTPS. No
+  service is perfectly secure, and we can't guarantee that the person on the other end
+  of a call isn't recording their own screen — treat strangers accordingly.</p>
+
+  <h2>Changes</h2>
+  <p>If this policy changes, the date at the top changes with it. Material changes
+  affecting people with accounts will be notified by email.</p>
+
+  <h2>Contact</h2>
+  <p>Email <a href="mailto:olumiesupport@gmail.com">olumiesupport@gmail.com</a>. Olumie is
+  operated by an individual based in Washington State, United States.</p>
+
+  <div class="legal-foot">
+    <a href="/">Olumie</a> · <a href="/terms.html">Terms of Service</a>
+  </div>
+</div>
+</body>
+</html>
