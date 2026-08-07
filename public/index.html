@@ -378,6 +378,10 @@
       <li>Cancel any time — it's one tap in your account</li>
     </ul>
     <p class="price" id="premiumPrice"></p>
+    <!-- Renewal terms stated before checkout, not after — unexpected renewals are
+         a leading cause of chargebacks. -->
+    <p class="c-help" style="margin:0">Renews monthly until cancelled. Cancel any time from
+      your account. <a href="/terms.html" target="_blank" rel="noopener">Terms</a></p>
     <p class="c-help is-hidden" id="premiumMsg"></p>
     <div class="c-modal__actions">
       <button class="c-btn c-btn--ghost" id="premiumCancel">Not now</button>
@@ -410,6 +414,10 @@
     </div>
     <button class="c-btn c-btn--lg" id="ageAccept" style="width:100%" disabled>Enter</button>
     <button class="c-btn c-btn--ghost c-btn--sm" id="ageLeave">Leave</button>
+    <!-- Consent has to be linked at the point it's given, not buried elsewhere. -->
+    <p class="c-help" style="margin:2px 0 0;text-align:center">By entering you agree to the
+      <a href="/terms.html" target="_blank" rel="noopener">Terms</a> and
+      <a href="/privacy.html" target="_blank" rel="noopener">Privacy Policy</a>.</p>
   </div>
 </div>
 

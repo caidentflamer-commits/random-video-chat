@@ -1,0 +1,48 @@
+/* Shared styling for the Terms and Privacy pages. Reads as a document, not the
+   app: light-on-dark like the rest of Olumie, but measured for reading rather
+   than for a control surface. Depends on clarity.css for the tokens, and on
+   data-theme="dark" on <html> for the dark values.
+   clarity.css defines the tokens but has no `body` rule of its own — it expects a
+   container (.c-stage) to paint the surface — so the page must apply them itself. */
+body { margin: 0; background: var(--bg); color: var(--text); }
+
+.legal-wrap { max-width: 68ch; margin: 0 auto; padding: 48px 22px 96px; }
+
+.legal-back {
+  display: inline-flex; align-items: center; gap: 8px; text-decoration: none;
+  color: var(--text-muted); font-size: var(--fs-sm); margin-bottom: 28px;
+}
+.legal-back:hover { color: var(--text); }
+
+.legal-wrap h1 { font-size: var(--fs-2xl); margin: 0 0 6px; letter-spacing: -.02em; text-wrap: balance; }
+/* Scoped to .legal-wrap so it outranks the `.legal-wrap p` colour rule below —
+   as a bare .legal-updated it lost and rendered at full body brightness. */
+.legal-wrap .legal-updated { color: var(--text-muted); font-size: var(--fs-sm); margin: 0 0 34px; }
+
+.legal-wrap h2 {
+  font-size: var(--fs-lg); margin: 38px 0 10px; letter-spacing: -.01em;
+  padding-top: 18px; border-top: 1px solid var(--border);
+}
+.legal-wrap h2:first-of-type { border-top: 0; padding-top: 0; }
+
+.legal-wrap p, .legal-wrap li { font-size: var(--fs-md); line-height: 1.65; color: var(--text); }
+.legal-wrap p { margin: 0 0 14px; }
+.legal-wrap ul { margin: 0 0 14px; padding-left: 20px; display: grid; gap: 8px; }
+/* --primary (#6d63ff) only reaches 4.4:1 on the dark ground — just under WCAG AA.
+   Lifted to a brighter tint of the same hue: 7.2:1, still unmistakably the brand. */
+.legal-wrap a { color: #9a93ff; }
+.legal-wrap strong { font-weight: 650; }
+
+/* Pulls the eye to the handful of statements people actually need to see. */
+.legal-callout {
+  background: var(--surface); border: 1px solid var(--border);
+  border-left: 3px solid var(--primary); border-radius: var(--r-md);
+  padding: 14px 16px; margin: 0 0 18px;
+}
+.legal-callout p:last-child { margin-bottom: 0; }
+
+/* --text-subtle only manages 4.01:1 here, so the footer uses --text-muted. */
+.legal-foot { margin-top: 48px; padding-top: 20px; border-top: 1px solid var(--border); color: var(--text-muted); font-size: var(--fs-sm); }
+.legal-foot a { color: #9a93ff; }
+
+@media (max-width: 600px) { .legal-wrap { padding: 32px 18px 72px; } }
