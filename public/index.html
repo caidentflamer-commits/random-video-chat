@@ -989,16 +989,28 @@ els.authBackdrop.addEventListener('click', closeAuth);
 // Cancel / update card, on Stripe's own hosted page. The server resolves the
 // Stripe customer from the signed-in user, so nothing identifying is sent here.
 els.manageBtn.addEventListener('click', async () => {
-  if (!authToken) return;
+  if (!sb || !authUser) return;
   els.manageBtn.classList.add('is-loading');
   try {
+    // Ask Supabase for the session rather than trusting the token captured at
+    // sign-in: access tokens last an hour, and a tab left open outlives them.
+    // getSession() refreshes when needed, so this is the live token.
+    const { data } = await sb.auth.getSession();
+    const token = data && data.session && data.session.access_token;
+    if (!token) { toast('Your session expired — sign in again.'); applySession(null); throw new Error('no session'); }
+    authToken = token;
     const r = await fetch('/portal', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: authToken }),
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token }),
     });
     const j = await r.json().catch(() => ({}));
     if (r.ok && j.url) { location.href = j.url; return; }   // leaving the page; keep the spinner
-    toast(r.status === 404 ? 'No subscription found on this account.' : 'Couldn’t open the subscription page — try again.');
-  } catch { toast('Couldn’t open the subscription page — try again.'); }
+    // Distinct message per failure — a single vague error makes this
+    // undiagnosable, which cost us a debugging round trip already.
+    if (r.status === 401) toast('Your session expired — sign in again.');
+    else if (r.status === 404) toast('No subscription found on this account.');
+    else if (r.status === 503) toast('Subscriptions aren’t set up yet.');
+    else toast('Couldn’t open the subscription page' + (j.code ? ` (${j.code})` : '') + ' — try again.');
+  } catch (e) { if (e.message !== 'no session') toast('Couldn’t reach the server — check your connection.'); }
   els.manageBtn.classList.remove('is-loading');
 });
 // Google: one tap, and it re-authenticates on any device — no email round trip

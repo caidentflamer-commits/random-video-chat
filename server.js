@@ -220,10 +220,13 @@ const server = http.createServer((req, res) => {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ url: session.url }));
       } catch (e) {
-        // The usual cause is the portal not being activated in the Stripe
-        // dashboard (Settings -> Billing -> Customer portal).
-        console.error('portal:', e.message);
-        fail(500, 'could not open the subscription page');
+        // Surface Stripe's own error code so a failure is identifiable without
+        // digging through host logs. The code is a short enum (resource_missing,
+        // invalid_request_error, …) — no customer data in it.
+        const code = e && (e.code || e.type) ? String(e.code || e.type) : 'unknown';
+        console.error(`portal: [${code}] ${e && e.message}`);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'could not open the subscription page', code }));
       }
     });
     return;
