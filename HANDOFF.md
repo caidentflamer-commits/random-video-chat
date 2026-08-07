@@ -60,6 +60,14 @@ people together with a friend). Monetized by a **Premium** subscription.
   sufficient, since `https://olumie.chat/` is the canonical anyway.
 - **TURN:** `/ice` serves ICE config from env; **STUN-only today**, TURN plumbing
   ready (see `TURN.md`).
+- **Upgrade prompt (PR #32):** tapping a locked gender filter opens a modal stating
+  what Premium does, that the free version is unchanged, that cancelling is one tap,
+  and the price — checkout only opens from an explicit **Continue**. It previously
+  jumped straight to Stripe, so the price was first seen on a payment page. Shown to
+  signed-out visitors too; Continue then routes to sign-in. `window.open` must stay
+  directly inside the Continue click handler (a user gesture) or mobile popup
+  blockers eat it, and `client_reference_id` must keep riding through — the webhook
+  maps the payment to a user with it.
 - **Manage/cancel subscription:** `POST /portal` verifies the caller's Supabase
   token, looks up their `stripe_customer_id` server-side, and returns a Stripe
   **billing-portal** URL. A "Subscription" button appears in the status bar only
@@ -262,6 +270,12 @@ whether to promote it.
   nothing resolves until DNS mode is switched to Custom DNS Records.
 - **`<head>` has TWO `google-site-verification` tags on purpose** — one per Search
   Console property. Deleting either un-verifies that property.
+- **The price is written down in two places that nothing keeps in sync.**
+  `PREMIUM_PRICE` in `public/index.html` (shown in the upgrade prompt) and the real
+  price on the Stripe Payment Link. **Change the price in Stripe → change it here in
+  the same sitting.** A prompt advertising one price while checkout charges another
+  is exactly the "I didn't agree to that" that becomes a chargeback, and dispute
+  rate is what gets a high-risk merchant terminated.
 - **Test-mode and live-mode Stripe objects are separate.** Payment Links, webhook
   endpoints, signing secrets and the customer portal config all have to be created
   again in live mode; only products/prices copy over.
