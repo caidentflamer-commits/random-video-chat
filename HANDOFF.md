@@ -167,16 +167,21 @@ classic (`ANON_KEY`/`SERVICE_KEY`) names.
   sensitive/restricted scopes, and ours (`email`/`profile`/`openid`) are all
   non-sensitive.
 - ✅ **Self-serve cancellation shipped** (PR #25) + made diagnosable (PR #26).
-- ⚠ **OPEN: the Subscription button failed once (2026-08-07).** Caiden saw the
-  generic *"Couldn't open the subscription page"*. Ruled out: it is **not** stale
-  test data (the live customer exists and is active) and **not** 404. So it was
-  401 (expired token) or 500 (Stripe call). PR #26 fixes the likely cause — the
-  client now fetches a fresh token at click time instead of reusing the one
-  captured at sign-in, which expires after an hour — and makes every failure name
-  itself. **Retry after that deploy; the message will now identify the cause.**
-- ⚠ **OPEN: Caiden has a live subscription to his own app** — $4.99/mo, renews
-  **Sep 7**, customer `cus_V1xVyhI8rlmGlf`. Cancel + refund the $5.45 from
-  Stripe → Customers, unless it's being kept deliberately as a test subscriber.
+- ✅ **Subscription/cancel portal CONFIRMED WORKING (2026-08-07).** It failed at
+  first with a generic message; PR #26 made failures name themselves and the retry
+  reported **`StripeAuthenticationError`** — Stripe was rejecting the API key. The
+  live secret key on Render was invalid (Stripe showed `Last used —`, i.e. never
+  successfully used). Rotated the key, updated Render, portal opened.
+  ⚠ **Why nothing else caught it, and the lesson:** `STRIPE_SECRET_KEY` is used by
+  **exactly one** code path — `POST /portal`. The webhook verifies signatures with
+  local HMAC (`STRIPE_WEBHOOK_SECRET`, a different value, no API call), and premium
+  activation only writes to Supabase. So a completely invalid API key looked
+  perfectly healthy: real charges succeeded, `is_premium` flipped, `/config` served
+  the live link. **Nothing in this app proves the Stripe API key works except
+  opening the portal.** Rotating the key does *not* affect webhook endpoints.
+- ⚠ **OPEN: Caiden has a live subscription to his own app** — $4.99/mo, customer
+  `cus_V1xVyhI8rlmGlf`, plus a second one bought to retest the portal. Cancel and
+  refund from Stripe → Customers unless kept deliberately as a test subscriber.
 - ✅ **Google sign-in LIVE (2026-08-03, PR #21).** Provider enabled on the Supabase
   project; the button auto-unhides via `/auth/v1/settings` (no redeploy needed to
   turn it on/off). Handshake verified as far as Google's account picker. Magic link
@@ -270,6 +275,11 @@ whether to promote it.
   nothing resolves until DNS mode is switched to Custom DNS Records.
 - **`<head>` has TWO `google-site-verification` tags on purpose** — one per Search
   Console property. Deleting either un-verifies that property.
+- **A broken `STRIPE_SECRET_KEY` is invisible.** It's used by one path only
+  (`POST /portal`). Webhooks verify by local HMAC and premium activation writes to
+  Supabase, so payments can work perfectly with a dead API key. If you ever rotate
+  or re-paste it, **open the Subscription button to confirm it** — nothing else
+  will tell you.
 - **The price is written down in two places that nothing keeps in sync.**
   `PREMIUM_PRICE` in `public/index.html` (shown in the upgrade prompt) and the real
   price on the Stripe Payment Link. **Change the price in Stripe → change it here in
