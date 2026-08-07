@@ -48,9 +48,16 @@ people together with a friend). Monetized by a **Premium** subscription.
 - **Durable bans/reports:** written to Supabase when configured (confirmed
   `supabaseConnected: true`).
 - **SEO:** meta/OG tags, `robots.txt`, `sitemap.xml` — all now point at
-  `https://olumie.chat` (PR #24). **Google Search Console verified** (tag in
-  `<head>` — don't remove). ⚠ The existing property is a URL-prefix one for the
-  old Render URL; a **Domain property for `olumie.chat` has not been added yet**.
+  `https://olumie.chat` (PR #24). **Search Console: `https://olumie.chat`
+  verified 2026-08-07** as a URL-prefix property, alongside the older
+  `onrender.com` one.
+  ⚠ **`<head>` carries TWO `google-site-verification` tags — keep both.** Search
+  Console issues one token per property, so removing either un-verifies that
+  property. They look like duplicate cruft; they aren't (PR #29).
+  A *Domain* property was attempted and abandoned: Google offers a one-click
+  Cloudflare flow (the nameservers are Cloudflare's) but there is no Cloudflare
+  account to sign into — see the DNS note under Services. URL-prefix is
+  sufficient, since `https://olumie.chat/` is the canonical anyway.
 - **TURN:** `/ice` serves ICE config from env; **STUN-only today**, TURN plumbing
   ready (see `TURN.md`).
 - **Manage/cancel subscription:** `POST /portal` verifies the caller's Supabase
@@ -199,11 +206,16 @@ whether to promote it.
    the site, not sooner. The free tier sleeps after ~15 min, so the first real
    visitor waits ~a minute on a video-chat site and webhooks hit a cold instance.
    No reason to pay while it's only being tested.
-4. **Small tail, none blocking:** Search Console **Domain** property for
-   `olumie.chat` (we can add DNS TXT records at Sav now, so a Domain property is
-   possible where it wasn't on the Render subdomain) · point Stripe's **business
-   URL** at `olumie.chat` · clear
-   Stripe's **phone verification** prompt. (Resend domain — DONE, see status.)
+4. **Small tail, none blocking:** in Search Console, submit `sitemap.xml` and
+   **Request Indexing** on the homepage (the property is verified; these are what
+   shorten the first crawl from weeks to days) · point Stripe's **business URL** at
+   `olumie.chat` · clear Stripe's **phone verification** prompt.
+   (Resend domain and Search Console verification — DONE, see status.)
+   Expectation-setting on SEO: a new domain with no backlinks will not rank for
+   "random video chat" or "omegle alternative" — those are contested by sites with
+   years of history. It will rank for "olumie", which nobody searches yet. Growth
+   for this category comes from TikTok/Reddit/Discord, where Party Mode is the
+   actually-shareable idea. Treat search as a slow compound, not a launch channel.
 5. **Before promoting anywhere — moderation is now an ongoing commitment.** The
    automated stack is a filter, not a backstop; the Discord report feed needs a
    human, and that human is Caiden. In this category that includes the possibility
