@@ -244,3 +244,30 @@ whether to promote it.
   `node server.js`; the app runs fully anonymous with no env (safe to develop).
 - Everything Supabase/Stripe/TURN-related is **inert without its env vars**, so
   half-built features deploy safely.
+- Git identity is **not set globally**. Set it `--local` in this repo to match
+  history: `Caiden <caidentflamer@gmail.com>`.
+- The repo lives at `C:\Users\caide\Documents\random-video-chat`. Sessions often
+  open with the working directory set to an **unrelated project**, so `HANDOFF.md`
+  read from the cwd may be a different app entirely.
+
+## Gotchas that have already cost time — read before repeating them
+- **DNS records are edited at Sav, not Cloudflare.** A lookup returns Cloudflare
+  nameservers because Sav uses Cloudflare as its backend. There is no Cloudflare
+  account. Records: Sav → Manage DNS Settings → **Custom DNS Records**.
+- **Sav's `Proxy` toggle, `SSL` and `DDoS Protection` must stay OFF.** They proxy
+  the domain and silently **override the A record**, which looks exactly like a
+  propagation delay. They also break the WebSocket and rewrite `x-forwarded-for`,
+  corrupting the IP bans in `getClientIp()`.
+- **Fresh domains sit on parking nameservers.** Sav ships `ns*-coming-soon.sav.com`;
+  nothing resolves until DNS mode is switched to Custom DNS Records.
+- **`<head>` has TWO `google-site-verification` tags on purpose** — one per Search
+  Console property. Deleting either un-verifies that property.
+- **Test-mode and live-mode Stripe objects are separate.** Payment Links, webhook
+  endpoints, signing secrets and the customer portal config all have to be created
+  again in live mode; only products/prices copy over.
+- **Verifying the premium loop in test mode does not verify it live** — the webhook
+  secret differs. It has since been confirmed live with a real charge.
+- **PowerShell + `git`/`gh`:** never inline text containing quotes or newlines as an
+  argument; PS 5.1 re-splits it. Write the text to a file and use `git commit -F`
+  and `gh pr create --body-file`. Also, `git push` writing progress to stderr shows
+  up as a PowerShell `NativeCommandError` — that is **not** a failure.
