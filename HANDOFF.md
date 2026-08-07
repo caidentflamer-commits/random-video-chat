@@ -14,8 +14,10 @@ people together with a friend). Monetized by a **Premium** subscription.
 - **Front end:** `public/index.html` — one file, vanilla HTML/CSS/JS, **no build step**.
 - **Back end:** `server.js` — Node HTTP server (serves `public/`) + `ws` WebSocket
   server for signaling/matchmaking/moderation. Deps: `ws`, `@supabase/supabase-js`, `stripe`.
-- **Host:** Render free tier. **Push to `main` → auto-deploys.** Free tier **sleeps
-  after ~15 min idle** (first hit / webhook after idle is delayed; Stripe retries).
+- **Host:** Render **free tier** — still, as of 2026-08-07. **Push to `main` →
+  auto-deploys.** Free tier **sleeps after ~15 min idle** (first hit / webhook
+  after idle is delayed; Stripe retries). Upgrading to Starter ($7/mo) is the last
+  thing to do before sending real traffic.
 - **Live URL:** `https://olumie.chat` (bought 2026-08-03 via Sav; auto-renew ~$28/yr).
   Render's `https://random-video-chat-azkk.onrender.com` keeps working — both
   resolve, but `olumie.chat` is canonical in the SEO tags.
@@ -41,11 +43,14 @@ people together with a friend). Monetized by a **Premium** subscription.
   the provider is enabled on the project (checked via `/auth/v1/settings`).
 - **Subscriptions:** `/stripe/webhook` (signature-verified) flips
   `profiles.is_premium` on subscribe / off on cancel. Upgrade opens the Stripe
-  Payment Link with `client_reference_id=<userId>`. **Test mode, verified wired.**
+  Payment Link with `client_reference_id=<userId>`. **LIVE MODE — taking real
+  money since 2026-08-07.** Premium is $4.99/mo.
 - **Durable bans/reports:** written to Supabase when configured (confirmed
   `supabaseConnected: true`).
-- **SEO:** meta/OG tags, `robots.txt`, `sitemap.xml`, **Google Search Console
-  verified** (tag in `<head>` — don't remove).
+- **SEO:** meta/OG tags, `robots.txt`, `sitemap.xml` — all now point at
+  `https://olumie.chat` (PR #24). **Google Search Console verified** (tag in
+  `<head>` — don't remove). ⚠ The existing property is a URL-prefix one for the
+  old Render URL; a **Domain property for `olumie.chat` has not been added yet**.
 - **TURN:** `/ice` serves ICE config from env; **STUN-only today**, TURN plumbing
   ready (see `TURN.md`).
 - **Manage/cancel subscription:** `POST /portal` verifies the caller's Supabase
@@ -54,24 +59,32 @@ people together with a friend). Monetized by a **Premium** subscription.
   for signed-in premium users. Self-serve cancellation exists so people cancel
   instead of filing disputes — dispute rate is what gets a high-risk merchant
   terminated. ⚠ Needs the portal **activated once** in Stripe → Settings →
-  Billing → **Customer portal**, or the API call errors (server logs `portal:`).
+  Billing → **Customer portal** — DONE 2026-08-05 (config `bpc_1U13U9…`, Active,
+  cancellation enabled). Failures now name themselves (PR #26): 401 expired
+  session, 404 no subscription, 503 not set up, else Stripe's own error code.
 - **Support tip button:** hidden unless `SUPPORT_URL` (a constant in index.html) is set.
 
 ## Services (see the in-app services console the user has)
-GitHub · Render · Supabase · Stripe (**test mode**) · Discord (moderation feed) ·
-Resend (SMTP for auth emails) · Google Search Console · Google Cloud (OAuth client).
+GitHub · Render · Supabase · Stripe (**LIVE mode, approved**) · Discord (moderation
+feed) · Resend (SMTP for auth emails) · Google Search Console · Google Cloud (OAuth
+client) · **Cloudflare (DNS for `olumie.chat`)** · Sav (registrar).
+
+⚠ **Cloudflare records must stay DNS-only (grey cloud).** Proxying breaks the
+WebSocket signaling and rewrites `x-forwarded-for`, which corrupts the IP bans in
+`getClientIp()` — a shared proxy IP could ban unrelated users en masse.
 
 ## What it costs (checked 2026-08-03 — re-verify before committing)
-**Everything is on a free tier today: $0/mo.** At launch: **~$10/mo minimum**,
-**~$45/mo polished**. Stripe sits outside those totals — no monthly fee, it takes
-a cut per charge.
+**Still ~$0/mo of recurring spend**, plus the domain already paid for. The only
+thing actually bought so far is `olumie.chat` (~$5 year one, ~$28/yr after).
+Remaining to reach "launched properly": **Render Starter $7/mo**. Stripe sits
+outside these totals — no monthly fee, it takes a cut per charge.
 
 | Service | Now | At launch | Notes |
 |---|---|---|---|
 | Render | Free | **$7/mo** | Starter. Effectively mandatory — free tier sleeps after ~15 min, so the first visitor waits ~1 min and Stripe webhooks hit a cold instance. |
 | Supabase | Free | **$0–35/mo** | Free (500 MB, 50k MAU) genuinely covers launch. Pro $25 + custom domain $10 buys only the auth-domain fix below. Free projects pause after ~1 week idle. |
-| Stripe | $0 | **2.9% + 30¢** | Per charge, +0.7% if using Billing. No monthly fee — you pay only when you earn. |
-| Domain `olumie.chat` | — | **~$38/yr** | ⚠ `.chat` renews far above its signup price (~$6 first year). Compare **renewal** columns, not headline prices. |
+| Stripe | live | **2.9% + 30¢** | Per charge, +0.7% if using Billing. No monthly fee — you pay only when you earn. **Approved 2026-08-07.** |
+| Domain `olumie.chat` | **bought** | **~$28/yr** | Sav, registered 2026-08-03. ⚠ `.chat` renews far above its ~$5 signup price — auto-renew is the thing to keep on. |
 | TURN relay | — | Free <1 TB | Cloudflare: 1,000 GB/mo free, then $0.05/GB. Likely stays free at this scale. |
 | Resend · Google Cloud · GitHub · Search Console · Discord | Free | **Free** | No paid tier needed. Resend free = 3,000 emails/mo (100/day), 1 domain — domain verification is included. |
 
@@ -92,11 +105,42 @@ classic (`ANON_KEY`/`SERVICE_KEY`) names.
   the built-in email is rate-limited). Supabase **Site URL** must be the Render
   URL or links die at localhost. Resend's shared `onboarding@resend.dev` sender
   only delivers to the Resend-account email until a domain is verified.
-- ✅ Stripe webhook + premium link wired in **test mode** (`/config` serves
-  `premiumUrl`; webhook returns 400 to unsigned POSTs = verifying signatures).
-- ✅ **Premium loop VERIFIED end-to-end (2026-08-03):** subscribe with test card
-  `4242 4242 4242 4242` → `profiles.is_premium = true` → gender filter unlocks →
-  cancel flips it back. `stripe_customer_id` confirmed present on the live table.
+- ✅ **STRIPE APPROVED & LIVE (2026-08-07).** The high-risk category worry did not
+  materialise. Account status shows *"No active tasks"*, payouts are **enabled and
+  daily**, no restrictions. Live keys, live Payment Link
+  (`buy.stripe.com/28E28t9SV3eq3Me2Hx1oI00`, $4.99/mo) and a live webhook endpoint
+  are all configured; the 3 Stripe env vars on Render were swapped to live.
+  How to re-check status later: Settings → Business → **Account status** (tasks) and
+  **Balances** (payouts). The dashboard home is mostly noise.
+- ✅ **LIVE PREMIUM LOOP VERIFIED WITH A REAL CHARGE (2026-08-07).** $5.45 (incl.
+  tax) succeeded on a real card → webhook fired → `is_premium = true` and the
+  correct **live** `stripe_customer_id` stored. This is the thing test mode could
+  never prove, since live uses a different webhook secret.
+- ✅ **Premium loop verified in test mode first (2026-08-03)** with card
+  `4242 4242 4242 4242`; cancel flipped it back.
+- ✅ **`olumie.chat` IS LIVE (2026-08-04).** DNS moved to **Cloudflare**
+  nameservers; apex `A → 216.24.57.1` (Render), `www` CNAME → the Render host.
+  HTTPS + certificate issued by Render. Canonical/`og:url`/robots/sitemap all
+  switched (PR #24). The Render URL still serves, so no dead links.
+  Getting here was fiddly: Sav's "coming soon" parking nameservers had to be
+  replaced, and Sav's **SSL / DDoS toggles must stay OFF** — they proxy the domain
+  and override the A record.
+- ✅ **Google consent screen PUBLISHED — "In production" (2026-08-07).** Anyone can
+  sign in; the test-user list no longer applies. The "100 user cap" shown on that
+  page does **not** bind us — it only applies to apps requesting unapproved
+  sensitive/restricted scopes, and ours (`email`/`profile`/`openid`) are all
+  non-sensitive.
+- ✅ **Self-serve cancellation shipped** (PR #25) + made diagnosable (PR #26).
+- ⚠ **OPEN: the Subscription button failed once (2026-08-07).** Caiden saw the
+  generic *"Couldn't open the subscription page"*. Ruled out: it is **not** stale
+  test data (the live customer exists and is active) and **not** 404. So it was
+  401 (expired token) or 500 (Stripe call). PR #26 fixes the likely cause — the
+  client now fetches a fresh token at click time instead of reusing the one
+  captured at sign-in, which expires after an hour — and makes every failure name
+  itself. **Retry after that deploy; the message will now identify the cause.**
+- ⚠ **OPEN: Caiden has a live subscription to his own app** — $4.99/mo, renews
+  **Sep 7**, customer `cus_V1xVyhI8rlmGlf`. Cancel + refund the $5.45 from
+  Stripe → Customers, unless it's being kept deliberately as a test subscriber.
 - ✅ **Google sign-in LIVE (2026-08-03, PR #21).** Provider enabled on the Supabase
   project; the button auto-unhides via `/auth/v1/settings` (no redeploy needed to
   turn it on/off). Handshake verified as far as Google's account picker. Magic link
@@ -121,36 +165,31 @@ classic (`ANON_KEY`/`SERVICE_KEY`) names.
   clears `socket.isPremium` server-side, which previously survived until reconnect.
 
 ## Next steps
-1. **Finish Google sign-in.** Provider is ENABLED and the button is live
-   (`external.google: true`); the OAuth handshake reaches Google's account picker,
-   so the Client ID + redirect URI are correct. Remaining: (a) add your own account
-   under **Audience → Test users** or Google blocks your own sign-in while the app
-   is in Testing, (b) **Publish app** before real users — the test-user list caps at
-   100. Publishing with only `email`/`profile`/`openid` (all non-sensitive) does
-   **not** trigger Google's verification review.
-2. **Start Stripe business verification NOW** — it is the long pole and the only
-   item that can block launch outright. ⚠ High-risk category: it may be declined,
-   and the fallback is a high-risk processor charging well above 2.9%. Approval
-   takes days-to-weeks, so start it and do everything below while waiting. No
-   amount of money speeds this up.
-3. **Go live** (once verification clears): a **live** Payment Link + live keys,
-   swap the 3 Stripe env vars, verify a Resend domain for real auth emails, and
-   pay for **Render Starter ($7/mo)** so the app stops sleeping — a cold start on
-   a video-chat app loses the visitor, and it delays Stripe webhooks.
-4. **Custom domain — BOUGHT 2026-08-03** (`olumie.chat`, Sav; `.com` is taken).
-   Code side is done (canonical, `og:url`, `robots.txt`, `sitemap.xml`). Remaining,
-   **in this order** — merge the code change only once DNS resolves, or the tags
-   point at a dead host:
-   a. Render → Settings → Custom Domain → add `olumie.chat` + `www`, copy its DNS
-      target, add the records at Sav, wait for Render to go **Verified**.
-   b. Google Cloud → Clients → add `https://olumie.chat` to **JavaScript origins**.
-      Leave the **redirect URI** alone (see `SUPABASE.md`).
-   c. Supabase → Authentication → URL Configuration → **Site URL** = the new domain,
-      add it to the redirect allow-list. Keep the Render URL listed too.
-   d. Search Console → add a **Domain** property (DNS TXT) now that we control DNS.
-   e. Stripe → update the business URL if the application is still open.
-   Keep the `.onrender.com` URL working; it costs nothing and avoids dead links.
-   **Do the Supabase custom domain in the same sitting.** Google's account picker
+
+**The launch blockers are all cleared.** Stripe is approved and taking real money,
+the domain is live, Google sign-in is published, and the premium loop has been
+proven with an actual charge. What's left is cleanup and a judgement call about
+whether to promote it.
+
+1. **Retry the Subscription button** after PR #26 deployed, and read the message —
+   it now identifies the cause instead of saying "try again". See Current status.
+2. **Cancel Caiden's own subscription + refund the $5.45** (renews Sep 7).
+3. **Render Starter ($7/mo)** — do this immediately *before* telling anyone about
+   the site, not sooner. The free tier sleeps after ~15 min, so the first real
+   visitor waits ~a minute on a video-chat site and webhooks hit a cold instance.
+   No reason to pay while it's only being tested.
+4. **Small tail, none blocking:** Search Console **Domain** property for
+   `olumie.chat` (we control DNS via Cloudflare now, so this is possible where it
+   wasn't before) · point Stripe's **business URL** at `olumie.chat` · clear
+   Stripe's **phone verification** prompt · verify a **Resend domain** so auth
+   emails stop coming from `onboarding@resend.dev` (which only delivers to the
+   Resend account owner — a real blocker once strangers sign up).
+5. **Before promoting anywhere — moderation is now an ongoing commitment.** The
+   automated stack is a filter, not a backstop; the Discord report feed needs a
+   human, and that human is Caiden. In this category that includes the possibility
+   of illegal content involving minors, which carries real legal reporting
+   obligations. Decide how a 2am report gets handled *before* it happens.
+6. **Optional, ~$35/mo — the auth-domain polish.** Google's account picker
    shows the redirect target's domain, so today it reads *"to continue to
    yyterkkuqceodisnhehu.supabase.co"* — a random ref that looks like phishing to a
    consumer. A Supabase custom domain moves auth to e.g. `auth.olumie.chat` and the
@@ -158,9 +197,9 @@ classic (`ANON_KEY`/`SERVICE_KEY`) names.
    so ~$35/mo total. Nothing in the Google consent screen config changes that line —
    app name/logo only affect the *permission* screen after account choice. The
    redirect URI must change at the same moment as the domain or sign-in breaks, so
-   these are one coordinated change, not two. Treat it as a launch-blocker for the
-   paid tier, not cosmetic — people bounce off sketchy Google prompts.
-5. **Deferred:** ad-free (needs an ad system + a category-friendly ad network —
+   these are one coordinated change, not two. Deferred deliberately: worth
+   revisiting once there's evidence real users drop off at sign-in, not before.
+7. **Deferred:** ad-free (needs an ad system + a category-friendly ad network —
    mainstream networks reject this category, like payment processors), priority
    matching, more Premium perks. **TURN is deferred on evidence now, not
    assumption** — real-device testing showed STUN is enough (see Current status).
