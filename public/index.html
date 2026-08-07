@@ -138,6 +138,11 @@
   #tags { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start; max-height: 260px; overflow-y: auto; }
   .tag.hidden { display: none; }
   .is-hidden { display: none !important; }
+  .perks { list-style: none; margin: 0; padding: 0; display: grid; gap: 9px; }
+  .perks li { display: flex; gap: 9px; font-size: var(--fs-sm); color: var(--text); }
+  .perks li::before { content: "✓"; color: var(--online); font-weight: 700; flex: 0 0 auto; }
+  .price { margin: 0; font-size: var(--fs-md); font-weight: 600; }
+  .price span { font-size: var(--fs-sm); font-weight: 400; color: var(--text-muted); }
   .c-modal__sheet { max-height: 90dvh; overflow: auto; }
 
   /* crawlable-but-invisible heading (SEO / a11y) */
@@ -358,6 +363,29 @@
   </div>
 </div>
 
+<!-- Premium upsell. Sits between tapping a locked filter and Stripe, so nobody
+     lands on a checkout page without knowing what it is or what it costs. -->
+<div class="c-modal is-hidden" id="premium-modal" role="dialog" aria-modal="true" aria-labelledby="premiumTitle">
+  <div class="c-modal__backdrop" id="premiumBackdrop"></div>
+  <div class="c-modal__sheet" style="width:min(420px,100%)">
+    <div>
+      <h3 class="c-h3" id="premiumTitle" style="font-size:var(--fs-md)">Choose who you meet</h3>
+      <p class="c-body c-muted" style="font-size:var(--fs-sm)">Picking who you're matched with is a Premium feature.</p>
+    </div>
+    <ul class="perks">
+      <li>Match with women, men, or anyone</li>
+      <li>Everything in the free version, unchanged</li>
+      <li>Cancel any time — it's one tap in your account</li>
+    </ul>
+    <p class="price" id="premiumPrice"></p>
+    <p class="c-help is-hidden" id="premiumMsg"></p>
+    <div class="c-modal__actions">
+      <button class="c-btn c-btn--ghost" id="premiumCancel">Not now</button>
+      <button class="c-btn" id="premiumGo">Continue</button>
+    </div>
+  </div>
+</div>
+
 <!-- Toast -->
 <div class="c-toast c-toast--success is-hidden" id="toast"><span class="c-toast__dot"></span> <span id="toastText"></span></div>
 
@@ -438,6 +466,8 @@ const els = {
   authBtn: $('authBtn'), authModal: $('auth-modal'), authBackdrop: $('authBackdrop'), authEmail: $('authEmail'),
   authMsg: $('authMsg'), authCancel: $('authCancel'), authSend: $('authSend'),
   authGoogle: $('authGoogle'), authOr: $('authOr'), manageBtn: $('manageBtn'),
+  premiumModal: $('premium-modal'), premiumBackdrop: $('premiumBackdrop'), premiumPrice: $('premiumPrice'),
+  premiumMsg: $('premiumMsg'), premiumCancel: $('premiumCancel'), premiumGo: $('premiumGo'),
 };
 
 let localStream = null, ws = null;
@@ -548,10 +578,25 @@ function renderFilterOptions() {
     els.genderOptions.appendChild(b);
   });
 }
-// Launch the Premium subscription checkout for the signed-in user.
+// ⚠ Must match the price on the Stripe Payment Link (STRIPE_PAYMENT_LINK).
+// Nothing enforces that, so changing the price in Stripe means changing it here.
+const PREMIUM_PRICE = '$4.99';
+
+// Explain Premium before sending anyone to Stripe. Tapping a locked filter used
+// to open checkout instantly, which is a jarring way to meet a price for the
+// first time. Shown to signed-out users too — learning what it costs shouldn't
+// require signing in first.
 function openUpgrade() {
-  if (!authUser) { toast('Sign in first, then upgrade to Premium.'); openAuth(); return; }
-  if (!premiumUrl) { toast('Premium is coming very soon.'); return; }
+  els.premiumPrice.innerHTML = PREMIUM_PRICE + ' <span>per month</span>';
+  show(els.premiumMsg, false);
+  show(els.premiumModal, true);
+}
+function closePremium() { show(els.premiumModal, false); }
+// Only from an explicit "Continue" — keeps window.open inside a user gesture so
+// mobile popup blockers don't eat it.
+function startCheckout() {
+  if (!authUser) { closePremium(); toast('Sign in first, then upgrade to Premium.'); openAuth(); return; }
+  if (!premiumUrl) { els.premiumMsg.textContent = 'Premium isn’t available just yet — try again shortly.'; show(els.premiumMsg, true); return; }
   try {
     const u = new URL(premiumUrl);
     u.searchParams.set('client_reference_id', authUser.id);
@@ -559,6 +604,7 @@ function openUpgrade() {
     window.open(u.toString(), '_blank', 'noopener');
     toast('Opening secure checkout…');
   } catch { window.open(premiumUrl, '_blank', 'noopener'); }
+  closePremium();
 }
 // Re-check premium straight from the profiles row (RLS lets you read your own).
 // Going through the database rather than the socket means this still works with
@@ -644,6 +690,9 @@ els.editInterests.addEventListener('click', openInterests);
 els.settingsBtn.addEventListener('click', openInterests);
 els.filtersDone.addEventListener('click', closeFilters);
 els.filtersBackdrop.addEventListener('click', closeFilters);
+els.premiumCancel.addEventListener('click', closePremium);
+els.premiumBackdrop.addEventListener('click', closePremium);
+els.premiumGo.addEventListener('click', startCheckout);
 
 // --- Chat -----------------------------------------------------------------
 function addChat(text, kind, who) {
