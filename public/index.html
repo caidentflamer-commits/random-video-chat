@@ -138,6 +138,42 @@
   #tags { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start; max-height: 260px; overflow-y: auto; }
   .tag.hidden { display: none; }
   .is-hidden { display: none !important; }
+  /* Ring light. A browser cannot touch hardware brightness — no API exists — so
+     this works by putting warm bright pixels around the viewport edge and letting
+     the display itself light the user's face. Warm (#fff4e6) rather than pure
+     white, which renders skin cold and blue. z-index 40: above the video, below
+     modals (50) so dialog text stays readable while it's on. */
+  .ringlight {
+    position: fixed; inset: 0; z-index: 40; pointer-events: none;
+    opacity: 0; transition: opacity .22s ease;
+    /* Tuning knobs — brightest at the very edge, fading inward.
+       --a  peak alpha at the edge      --a2 alpha at the shoulder
+       --mx/--my  where the shoulder sits    --rx/--ry  how far the glow reaches
+       Horizontal and vertical reach are separate: the same percentage on a tall
+       phone would push the top/bottom glow far deeper in pixels than the sides. */
+       Geometry is FIXED across levels — the levels change brightness only, never
+       size, so stepping through them reads as a dimmer rather than the light
+       growing. Reach is min(percentage, pixel cap): the percentage keeps it
+       proportional on a phone, the cap stops a wide desktop turning it into a wash. */
+    --a: 0; --a2: 0;
+    --mx: min(2.4%, 22px); --my: min(2%, 20px);
+    --rx: min(6.5%, 64px); --ry: min(5.5%, 56px);
+    /* Fading to rgba(...,0) rather than `transparent` on purpose: `transparent`
+       is rgba(0,0,0,0), and interpolating toward it drags a grey haze through
+       the midpoint instead of a clean fade. */
+    background:
+      linear-gradient(to right,  rgba(255,244,230,var(--a)) 0%, rgba(255,244,230,var(--a2)) var(--mx), rgba(255,244,230,0) var(--rx)),
+      linear-gradient(to left,   rgba(255,244,230,var(--a)) 0%, rgba(255,244,230,var(--a2)) var(--mx), rgba(255,244,230,0) var(--rx)),
+      linear-gradient(to bottom, rgba(255,244,230,var(--a)) 0%, rgba(255,244,230,var(--a2)) var(--my), rgba(255,244,230,0) var(--ry)),
+      linear-gradient(to top,    rgba(255,244,230,var(--a)) 0%, rgba(255,244,230,var(--a2)) var(--my), rgba(255,244,230,0) var(--ry));
+  }
+  /* The four gradients overlap at the corners, so corners read brightest —
+     which is how a real ring behaves, rather than a flat even border. */
+  /* Single on state at full brightness — the dimmer steps were dropped once the
+     brightest setting turned out to be the only useful one. */
+  .ringlight.on { opacity: 1; --a: .92; --a2: .40; }
+  #ringBtn.ring-on { color: #fff4e6; background: rgba(255,244,230,.15); }
+  @media (prefers-reduced-motion: reduce) { .ringlight { transition: none; } }
   .perks { list-style: none; margin: 0; padding: 0; display: grid; gap: 9px; }
   .perks li { display: flex; gap: 9px; font-size: var(--fs-sm); color: var(--text); }
   .perks li::before { content: "✓"; color: var(--online); font-weight: 700; flex: 0 0 auto; }
@@ -195,6 +231,7 @@
       <span class="shield" id="shield" title="Safety checks on">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--online)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 5 6v5.5c0 4.4 2.9 8.2 7 9.5 4.1-1.3 7-5.1 7-9.5V6l-7-3Z"/><path d="m9 12 2.2 2.2L15.5 10"/></svg>
       </span>
+      <button class="c-iconbtn" id="ringBtn" aria-label="Ring light" title="Ring light — off" style="width:30px;height:30px;font-size:14px">💡</button>
       <button class="c-iconbtn" id="settingsBtn" aria-label="Settings" style="width:30px;height:30px;font-size:14px">⚙</button>
     </div>
   </div>
@@ -390,6 +427,9 @@
   </div>
 </div>
 
+<!-- Ring light: the screen is the lamp. Sits above video, below modals. -->
+<div class="ringlight" id="ringLight" aria-hidden="true"></div>
+
 <!-- Toast -->
 <div class="c-toast c-toast--success is-hidden" id="toast"><span class="c-toast__dot"></span> <span id="toastText"></span></div>
 
@@ -476,6 +516,7 @@ const els = {
   authGoogle: $('authGoogle'), authOr: $('authOr'), manageBtn: $('manageBtn'),
   premiumModal: $('premium-modal'), premiumBackdrop: $('premiumBackdrop'), premiumPrice: $('premiumPrice'),
   premiumMsg: $('premiumMsg'), premiumCancel: $('premiumCancel'), premiumGo: $('premiumGo'),
+  ringBtn: $('ringBtn'), ringLight: $('ringLight'),
 };
 
 let localStream = null, ws = null;
@@ -1099,6 +1140,26 @@ els.authSend.addEventListener('click', async () => {
   show(els.authMsg, true);
   els.authSend.classList.remove('is-loading');
 });
+
+// --- Ring light -----------------------------------------------------------
+// Straight on/off. The effect depends on the user's own screen brightness, which
+// the web can't raise for them — hence the hint the first time it's switched on.
+let ringOn = false;
+// Older builds stored a level 0–3 here; anything non-zero counts as on.
+try { const s = localStorage.getItem('olumie_ringlight'); ringOn = !!s && s !== '0'; } catch {}
+function applyRingLight() {
+  els.ringLight.classList.toggle('on', ringOn);
+  els.ringBtn.classList.toggle('ring-on', ringOn);
+  els.ringBtn.title = ringOn ? 'Ring light — on' : 'Ring light — off';
+  els.ringBtn.setAttribute('aria-pressed', ringOn ? 'true' : 'false');
+  try { localStorage.setItem('olumie_ringlight', ringOn ? '1' : '0'); } catch {}
+}
+els.ringBtn.addEventListener('click', () => {
+  ringOn = !ringOn;
+  if (ringOn) toast('Ring light on — turn your screen brightness up for the full effect.');
+  applyRingLight();
+});
+applyRingLight();
 
 // --- Boot -----------------------------------------------------------------
 phase = 'idle'; render(); updateShield(); initAgeGate(); initAuth();
