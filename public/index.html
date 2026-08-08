@@ -151,7 +151,11 @@
        --mx/--my  where the shoulder sits    --rx/--ry  how far the glow reaches
        Horizontal and vertical reach are separate: the same percentage on a tall
        phone would push the top/bottom glow far deeper in pixels than the sides. */
-    --a: 0; --a2: 0; --mx: 4%; --my: 3%; --rx: 18%; --ry: 13%;
+       Reach is min(percentage, pixel cap): the percentage keeps it proportional on
+       a phone, the cap stops a wide desktop screen turning 13% into a 300px wash. */
+    --a: 0; --a2: 0;
+    --mx: min(1.8%, 16px); --my: min(1.5%, 16px);
+    --rx: min(13%, 140px); --ry: min(10%, 130px);
     /* Fading to rgba(...,0) rather than `transparent` on purpose: `transparent`
        is rgba(0,0,0,0), and interpolating toward it drags a grey haze through
        the midpoint instead of a clean fade. */
@@ -163,11 +167,9 @@
   }
   /* The four gradients overlap at the corners, so corners read brightest —
      which is how a real ring behaves, rather than a flat even border. */
-  .ringlight[data-level="1"] { opacity: 1; --a: .34; --a2: .13; --rx: 15%; --ry: 11%; }
-  .ringlight[data-level="2"] { opacity: 1; --a: .60; --a2: .24; --rx: 21%; --ry: 15%; }
-  .ringlight[data-level="3"] { opacity: 1; --a: .92; --a2: .40; --rx: 29%; --ry: 21%; }
-  /* Reach is percentage-based, so it scales with the viewport on its own — no
-     separate mobile sizes needed the way fixed border pixels required. */
+  .ringlight[data-level="1"] { opacity: 1; --a: .34; --a2: .13; --rx: min(6%, 55px);  --ry: min(5%, 55px); }
+  .ringlight[data-level="2"] { opacity: 1; --a: .60; --a2: .24; --rx: min(9%, 95px);  --ry: min(7%, 90px); }
+  .ringlight[data-level="3"] { opacity: 1; --a: .92; --a2: .40; --rx: min(13%, 140px); --ry: min(10%, 130px); }
   #ringBtn.ring-on { color: #fff4e6; background: rgba(255,244,230,.15); }
   @media (prefers-reduced-motion: reduce) { .ringlight { transition: none; } }
   .perks { list-style: none; margin: 0; padding: 0; display: grid; gap: 9px; }
