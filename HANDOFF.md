@@ -205,6 +205,36 @@ classic (`ANON_KEY`/`SERVICE_KEY`) names.
   (permanent), **500** = handler failure (Stripe retries, shows red). Sign-out also
   clears `socket.isPremium` server-side, which previously survived until reconnect.
 
+## ACTIVE THREAD: mobile UI rework (started 2026-08-08)
+
+Caiden's current focus. The mobile layout is cluttered and should feel like a
+**FaceTime call** instead.
+
+**The measurement that frames it.** On a 375×812 phone, on a video chat app:
+- **Video occupies 5% of the screen.** FaceTime is effectively 100%.
+- 39 visible blocks stacked on one screen.
+- The layout is a `.videorow` (56% of the height) above a `.bottomrow` (38%),
+  with the local preview at 18% and a separate `#chatPanel` always present.
+- Idle state fills the largest tile with a text panel (`#idlePanel`, 55%) rather
+  than with camera.
+
+**Direction.** FaceTime's shape: remote video full-bleed edge to edge; own camera
+as a small rounded picture-in-picture in a corner; controls hidden until tap, then
+a floating row over the video; no permanent panels, no side-by-side tiles; status
+and chat overlaid rather than boxed.
+
+**Constraints that must survive the rework** (all verified working, don't break them):
+- Party Mode is a mesh of up to 4, so the layout needs a multi-tile state as well
+  as 1-on-1. `#remoteGrid` uses `data-n` for the count.
+- The NSFW check samples `els.local` and each remote `<video>`; those elements must
+  stay in the DOM and keep playing, not be unmounted when controls hide.
+- The age gate, report flow, ring light and Premium/filters modals all overlay the
+  same screen. z-index order: ring light 40, modals 50, toast 60, banned 70, warn
+  80, age gate 90.
+- `render()` in `index.html` is the single source of truth for what's on screen,
+  driven by `phase` (`idle` | `searching` | `connected`) plus `peers.size`. Rework
+  the layout through it rather than around it.
+
 ## Next steps
 
 **The launch blockers are all cleared.** Stripe is approved and taking real money,
