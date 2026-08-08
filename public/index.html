@@ -169,11 +169,9 @@
   }
   /* The four gradients overlap at the corners, so corners read brightest —
      which is how a real ring behaves, rather than a flat even border. */
-  /* Levels set alpha only — no --mx/--my/--rx/--ry here on purpose, so the glow
-     stays exactly the same size at every level and just gets brighter. */
-  .ringlight[data-level="1"] { opacity: 1; --a: .34; --a2: .13; }
-  .ringlight[data-level="2"] { opacity: 1; --a: .60; --a2: .24; }
-  .ringlight[data-level="3"] { opacity: 1; --a: .92; --a2: .40; }
+  /* Single on state at full brightness — the dimmer steps were dropped once the
+     brightest setting turned out to be the only useful one. */
+  .ringlight.on { opacity: 1; --a: .92; --a2: .40; }
   #ringBtn.ring-on { color: #fff4e6; background: rgba(255,244,230,.15); }
   @media (prefers-reduced-motion: reduce) { .ringlight { transition: none; } }
   .perks { list-style: none; margin: 0; padding: 0; display: grid; gap: 9px; }
@@ -430,7 +428,7 @@
 </div>
 
 <!-- Ring light: the screen is the lamp. Sits above video, below modals. -->
-<div class="ringlight" id="ringLight" data-level="0" aria-hidden="true"></div>
+<div class="ringlight" id="ringLight" aria-hidden="true"></div>
 
 <!-- Toast -->
 <div class="c-toast c-toast--success is-hidden" id="toast"><span class="c-toast__dot"></span> <span id="toastText"></span></div>
@@ -1144,20 +1142,21 @@ els.authSend.addEventListener('click', async () => {
 });
 
 // --- Ring light -----------------------------------------------------------
-// Cycles off → 1 → 2 → 3. The effect depends on the user's own screen
-// brightness, which the web can't raise for them — hence the hint on first use.
-let ringLevel = 0;
-try { ringLevel = Math.min(3, Math.max(0, parseInt(localStorage.getItem('olumie_ringlight') || '0', 10) || 0)); } catch {}
+// Straight on/off. The effect depends on the user's own screen brightness, which
+// the web can't raise for them — hence the hint the first time it's switched on.
+let ringOn = false;
+// Older builds stored a level 0–3 here; anything non-zero counts as on.
+try { const s = localStorage.getItem('olumie_ringlight'); ringOn = !!s && s !== '0'; } catch {}
 function applyRingLight() {
-  els.ringLight.dataset.level = String(ringLevel);
-  els.ringBtn.classList.toggle('ring-on', ringLevel > 0);
-  els.ringBtn.title = ringLevel ? `Ring light ${ringLevel}/3 — tap to change` : 'Ring light — off';
-  els.ringBtn.setAttribute('aria-pressed', ringLevel > 0 ? 'true' : 'false');
-  try { localStorage.setItem('olumie_ringlight', String(ringLevel)); } catch {}
+  els.ringLight.classList.toggle('on', ringOn);
+  els.ringBtn.classList.toggle('ring-on', ringOn);
+  els.ringBtn.title = ringOn ? 'Ring light — on' : 'Ring light — off';
+  els.ringBtn.setAttribute('aria-pressed', ringOn ? 'true' : 'false');
+  try { localStorage.setItem('olumie_ringlight', ringOn ? '1' : '0'); } catch {}
 }
 els.ringBtn.addEventListener('click', () => {
-  ringLevel = (ringLevel + 1) % 4;
-  if (ringLevel === 1) toast('Ring light on — turn your screen brightness up for the full effect.');
+  ringOn = !ringOn;
+  if (ringOn) toast('Ring light on — turn your screen brightness up for the full effect.');
   applyRingLight();
 });
 applyRingLight();
