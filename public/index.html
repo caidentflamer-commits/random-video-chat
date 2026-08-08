@@ -138,6 +138,27 @@
   #tags { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start; max-height: 260px; overflow-y: auto; }
   .tag.hidden { display: none; }
   .is-hidden { display: none !important; }
+  /* Ring light. A browser cannot touch hardware brightness — no API exists — so
+     this works by putting warm bright pixels around the viewport edge and letting
+     the display itself light the user's face. Warm (#fff4e6) rather than pure
+     white, which renders skin cold and blue. z-index 40: above the video, below
+     modals (50) so dialog text stays readable while it's on. */
+  .ringlight {
+    position: fixed; inset: 0; z-index: 40; pointer-events: none;
+    border: 0 solid #fff4e6; opacity: 0;
+    transition: border-width .18s ease, opacity .18s ease;
+  }
+  .ringlight[data-level="1"] { border-width: 24px; opacity: .5; }
+  .ringlight[data-level="2"] { border-width: 44px; opacity: .8; box-shadow: inset 0 0 70px 10px rgba(255,244,230,.30); }
+  .ringlight[data-level="3"] { border-width: 70px; opacity: 1;  box-shadow: inset 0 0 90px 18px rgba(255,244,230,.45); }
+  /* A 70px frame eats a phone screen, so the steps shrink with the viewport. */
+  @media (max-width: 600px) {
+    .ringlight[data-level="1"] { border-width: 14px; }
+    .ringlight[data-level="2"] { border-width: 28px; }
+    .ringlight[data-level="3"] { border-width: 46px; }
+  }
+  #ringBtn.ring-on { color: #fff4e6; background: rgba(255,244,230,.15); }
+  @media (prefers-reduced-motion: reduce) { .ringlight { transition: none; } }
   .perks { list-style: none; margin: 0; padding: 0; display: grid; gap: 9px; }
   .perks li { display: flex; gap: 9px; font-size: var(--fs-sm); color: var(--text); }
   .perks li::before { content: "✓"; color: var(--online); font-weight: 700; flex: 0 0 auto; }
@@ -195,6 +216,7 @@
       <span class="shield" id="shield" title="Safety checks on">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--online)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 5 6v5.5c0 4.4 2.9 8.2 7 9.5 4.1-1.3 7-5.1 7-9.5V6l-7-3Z"/><path d="m9 12 2.2 2.2L15.5 10"/></svg>
       </span>
+      <button class="c-iconbtn" id="ringBtn" aria-label="Ring light" title="Ring light — off" style="width:30px;height:30px;font-size:14px">💡</button>
       <button class="c-iconbtn" id="settingsBtn" aria-label="Settings" style="width:30px;height:30px;font-size:14px">⚙</button>
     </div>
   </div>
@@ -390,6 +412,9 @@
   </div>
 </div>
 
+<!-- Ring light: the screen is the lamp. Sits above video, below modals. -->
+<div class="ringlight" id="ringLight" data-level="0" aria-hidden="true"></div>
+
 <!-- Toast -->
 <div class="c-toast c-toast--success is-hidden" id="toast"><span class="c-toast__dot"></span> <span id="toastText"></span></div>
 
@@ -476,6 +501,7 @@ const els = {
   authGoogle: $('authGoogle'), authOr: $('authOr'), manageBtn: $('manageBtn'),
   premiumModal: $('premium-modal'), premiumBackdrop: $('premiumBackdrop'), premiumPrice: $('premiumPrice'),
   premiumMsg: $('premiumMsg'), premiumCancel: $('premiumCancel'), premiumGo: $('premiumGo'),
+  ringBtn: $('ringBtn'), ringLight: $('ringLight'),
 };
 
 let localStream = null, ws = null;
@@ -1099,6 +1125,25 @@ els.authSend.addEventListener('click', async () => {
   show(els.authMsg, true);
   els.authSend.classList.remove('is-loading');
 });
+
+// --- Ring light -----------------------------------------------------------
+// Cycles off → 1 → 2 → 3. The effect depends on the user's own screen
+// brightness, which the web can't raise for them — hence the hint on first use.
+let ringLevel = 0;
+try { ringLevel = Math.min(3, Math.max(0, parseInt(localStorage.getItem('olumie_ringlight') || '0', 10) || 0)); } catch {}
+function applyRingLight() {
+  els.ringLight.dataset.level = String(ringLevel);
+  els.ringBtn.classList.toggle('ring-on', ringLevel > 0);
+  els.ringBtn.title = ringLevel ? `Ring light ${ringLevel}/3 — tap to change` : 'Ring light — off';
+  els.ringBtn.setAttribute('aria-pressed', ringLevel > 0 ? 'true' : 'false');
+  try { localStorage.setItem('olumie_ringlight', String(ringLevel)); } catch {}
+}
+els.ringBtn.addEventListener('click', () => {
+  ringLevel = (ringLevel + 1) % 4;
+  if (ringLevel === 1) toast('Ring light on — turn your screen brightness up for the full effect.');
+  applyRingLight();
+});
+applyRingLight();
 
 // --- Boot -----------------------------------------------------------------
 phase = 'idle'; render(); updateShield(); initAgeGate(); initAuth();
