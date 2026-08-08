@@ -235,6 +235,38 @@ and chat overlaid rather than boxed.
   driven by `phase` (`idle` | `searching` | `connected`) plus `peers.size`. Rework
   the layout through it rather than around it.
 
+### Done — stage + floating controls (PR A, 2026-08-08)
+
+All of it is CSS inside the existing `@media (max-width: 720px)` block plus ~40
+lines of JS. **Desktop is byte-for-byte unchanged** (verified by measuring the
+layout at 1280×800 before/after).
+
+- **The video is the screen.** `.videorow` is `position:absolute; inset:0`;
+  `.statusbar` and `.bottomrow` float over it. Layers: PiP-full-bleed 1 ·
+  `#remoteGrid` 2 · PiP 6 · scrim 8 · idle copy 9 · controls 10 — all below the
+  ring light's 40, so the existing overlay order is untouched.
+- **Your camera is the idle backdrop**, then demotes to a corner PiP the moment
+  someone arrives. Same element (`#rightTile`), so the swap animates. It's sized
+  with `right`/`bottom`/`width`/`height` rather than `inset` **on purpose** —
+  `auto` doesn't interpolate, so `inset` would snap instead of animate.
+- **Camera is now acquired when the age gate is accepted**, not at Start —
+  phones only (`startStageCamera()`); desktop still waits for a gesture.
+- **Controls fade out 4.2s into a call** (`body.controls-hidden`), tap the video
+  to toggle. Only in `connected` — idle and searching need their button. Nothing
+  is ever unmounted, so the NSFW sampler keeps reading every `<video>`.
+- **`--dock-h`** is the dock's measured height, set from `render()` (and a
+  `ResizeObserver`). The PiP and the idle copy both float directly above it.
+  ⚠ If you add anything to the dock, don't hardcode a height — read this.
+- `render()` now also sets `body[data-peers]` and toggles `#leftTile.has-remote`
+  (was an inline background) — both are load-bearing for the phone CSS.
+- Party mesh **stacks** into rows on a phone instead of a 2×2 grid.
+- `viewport-fit=cover` + `env(safe-area-inset-*)` padding on both overlays.
+
+**Still open (PR B):** chat is functional but plain — it should become fading
+bubbles with a 💬 toggle rather than a always-present log + field. The n=1
+report flag should move into the control row. iOS keyboard vs. `100dvh` +
+fixed overlays is untested — may need a `visualViewport` listener.
+
 ## Next steps
 
 **The launch blockers are all cleared.** Stripe is approved and taking real money,
