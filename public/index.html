@@ -2,7 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<!-- viewport-fit=cover lets the phone layout run under the notch and the home
+     indicator; the overlays pad themselves back off with env(safe-area-inset-*). -->
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 <!-- Search Console ownership. One tag per property — the first is the original
      onrender.com property, the second is olumie.chat. Keep BOTH: deleting either
      un-verifies that property. -->
@@ -58,7 +60,10 @@
   /* ---- Video row ---- */
   .videorow { flex: 1; min-height: 120px; display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 14px 24px 0; }
   .tile { height: 100%; aspect-ratio: auto; }
+  /* A class rather than an inline style out of render(), so the phone layout —
+     where the stage behind this tile is your own camera — can override it. */
   #leftTile { background: var(--surface); }
+  #leftTile.has-remote { background: #12151d; }
   .tile > video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: #000; }
   .fill { position: absolute; inset: 0; }
 
@@ -198,28 +203,166 @@
   .age-list { text-align: left; color: var(--text-muted); font-size: var(--fs-sm); line-height: 1.7; margin: 4px 0; padding-left: 18px; }
   .age-list strong { color: var(--text); }
 
+  /* =====================================================================
+     PHONE LAYOUT — a call, not a dashboard.
+     The video is the whole screen; everything else floats over it and gets
+     out of the way while you're connected. Nothing here changes desktop.
+
+     Layers, all under the z-index floor the existing overlays already claim
+     (ring light 40 · modals 50 · toast 60 · banned 70 · warn 80 · gate 90):
+        1  #rightTile full-bleed — your own camera, before anyone's there
+        2  #remoteGrid
+        6  #rightTile as a PiP — once someone is there
+        8  bottom scrim
+        9  idle / searching copy
+       10  status bar + dock
+
+     #leftTile deliberately keeps `z-index: auto` so its children can be
+     ordered against elements that live outside it.
+
+     Nothing is ever unmounted or display:none'd on the video path — the NSFW
+     sampler reads els.local and each remote <video> on a timer, so they have
+     to stay in the DOM and keep playing even with the controls hidden.
+     ===================================================================== */
   @media (max-width: 720px) {
-    .statusbar { padding: 8px 14px; }
-    .videorow { grid-template-columns: 1fr; position: relative; padding: 10px 12px 0; }
+    /* Height of the floating dock. Measured at runtime (see measureDock) —
+       the PiP and the idle copy both sit directly above it. */
+    :root { --dock-h: 150px; }
+
+    .shell { position: relative; }
+
+    /* ---- Stage ---- */
+    .videorow { position: absolute; inset: 0; min-height: 0; grid-template-columns: 1fr; padding: 0; gap: 0; }
+    #leftTile, #leftTile.has-remote { background: transparent; border-radius: 0; }
+    #remoteGrid { z-index: 2; }
+    /* Portrait: stack the mesh. A quarter of a 375px screen is a postage stamp. */
+    #remoteGrid[data-n="2"] { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; }
+    #remoteGrid[data-n="3"] { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr 1fr; }
+    #remoteGrid { gap: 2px; }
+    .remote-tile { border-radius: 0; }
+    /* One stranger needs no label — the status bar already says you're connected.
+       In a party it does: it's the only thing separating friend from stranger. */
+    #remoteGrid[data-n="1"] .c-tile__name { display: none; }
+    /* Only the tile that reaches the bottom of the screen has to clear the dock. */
+    .remote-tile:last-child .c-tile__name { bottom: calc(var(--dock-h) + 12px); }
+    /* Fades away with the rest of the controls. Only the top tile needs to duck
+       under the status bar; lower tiles in a party sit clear of it already. */
+    .report-flag { top: 12px; right: 12px; }
+    .remote-tile:first-child .report-flag { top: calc(env(safe-area-inset-top, 0px) + 54px); }
+
+    /* ---- Your camera: the backdrop, then a PiP ----
+       Sized with right/bottom/width/height rather than `inset`, because `auto`
+       doesn't interpolate — this way the demotion actually animates. */
     #rightTile {
-      position: absolute; right: 18px; bottom: 16px; z-index: 4;
-      width: 30vw; max-width: 128px; height: 40vw; max-height: 168px;
-      border: 2px solid var(--surface); border-radius: var(--r-md); box-shadow: var(--shadow-lg);
+      position: fixed; z-index: 1;
+      right: 0; bottom: 0; width: 100%; height: 100%;
+      border: 0; border-radius: 0; box-shadow: none;
+      transition: width .34s cubic-bezier(.4,0,.2,1), height .34s cubic-bezier(.4,0,.2,1),
+                  right .34s cubic-bezier(.4,0,.2,1), bottom .34s cubic-bezier(.4,0,.2,1),
+                  border-radius .3s ease;
     }
-    #rightTile .c-tile__name, #rightTile #localPlaceholder { display: none; }
-    #idlePanel { justify-content: flex-start; padding: 22px 20px; gap: 10px; }
+    /* Self-view reads as a mirror, like every other video app. CSS only — the
+       sampler draws from the <video> source, so moderation is unaffected. */
+    #local { transform: scaleX(-1); }
+    body:not([data-peers="0"]) #rightTile {
+      z-index: 6;
+      right: calc(env(safe-area-inset-right, 0px) + 12px);
+      bottom: calc(var(--dock-h) + 14px);
+      width: 29vw; max-width: 118px; height: 39vw; max-height: 158px;
+      border-radius: 16px; box-shadow: 0 10px 28px rgba(0,0,0,.55);
+    }
+    /* Controls out of the way → the PiP drops into the space they left. */
+    body.controls-hidden:not([data-peers="0"]) #rightTile { bottom: calc(env(safe-area-inset-bottom, 0px) + 16px); }
+    #rightTile .c-tile__name { display: none; }
+    body:not([data-peers="0"]) #localPlaceholder { display: none; }
+
+    /* ---- Idle / searching copy: bottom-anchored, sitting on the dock ---- */
+    #idlePanel {
+      z-index: 9; inset: auto 0 0 0; height: auto;
+      justify-content: flex-end; gap: 10px; padding: 0 16px 12px;
+      margin-bottom: var(--dock-h); text-shadow: 0 1px 14px rgba(0,0,0,.75);
+    }
     #idlePanel .c-h2 { font-size: var(--fs-lg); }
-    .bottomrow { grid-template-columns: 1fr; gap: 10px; padding: 10px 12px 14px; }
-    .col { gap: 8px; }
-    .chat-panel { height: 82px; }
+    /* The party buttons underneath say this themselves. */
+    #idleDefault > p { display: none; }
+    .idle-chips { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; }
+    .idle-chips::-webkit-scrollbar { display: none; }
+    .idle-chips .c-chip { flex: 0 0 auto; }
+    #searchPanel { z-index: 9; background: rgba(0,0,0,.45); }
+
+    /* ---- Scrim: one gradient for the whole bottom region, so the copy and
+       the dock don't each stack their own and leave a band between them. ---- */
+    .shell::after {
+      content: ''; position: fixed; left: 0; right: 0; bottom: 0; z-index: 8; pointer-events: none;
+      height: calc(var(--dock-h) + 200px);
+      background: linear-gradient(to top, rgba(0,0,0,.82) 0%, rgba(0,0,0,.6) 35%, rgba(0,0,0,.24) 70%, rgba(0,0,0,0) 100%);
+    }
+
+    /* ---- Status bar ---- */
+    .statusbar {
+      position: absolute; top: 0; left: 0; right: 0; z-index: 10; border-bottom: 0;
+      padding: calc(env(safe-area-inset-top, 0px) + 10px) calc(env(safe-area-inset-right, 0px) + 14px)
+               26px calc(env(safe-area-inset-left, 0px) + 14px);
+      background: linear-gradient(to bottom, rgba(0,0,0,.62) 0%, rgba(0,0,0,.3) 55%, rgba(0,0,0,0) 100%);
+    }
+    /* Account buttons are idle-state business; mid-call they're noise. */
+    body:not([data-state="idle"]) #authBtn, body:not([data-state="idle"]) #manageBtn { display: none; }
+
+    /* ---- Dock ---- */
+    .bottomrow {
+      position: absolute; left: 0; right: 0; bottom: 0; z-index: 10; background: none;
+      display: flex; flex-direction: column; gap: 10px;
+      padding: 0 calc(env(safe-area-inset-right, 0px) + 14px)
+               calc(env(safe-area-inset-bottom, 0px) + 12px) calc(env(safe-area-inset-left, 0px) + 14px);
+    }
+    /* The two columns dissolve so their contents can be interleaved into one
+       bottom-up stack: chat, action, icons, message field nearest the thumb. */
+    .bottomrow .col { display: contents; }
+    #chatPanel { order: 1; }
+    .big-btn, #connectedActions, #partyActions { order: 2; }
+    .control-row { order: 3; }
+    .msg-bar { order: 4; }
+
+    .chat-panel { background: none; border: 0; padding: 0; height: auto; max-height: 24vh; }
+    .chat-msg { text-shadow: 0 1px 6px rgba(0,0,0,.9); }
+    #chatEmpty { display: none; }
+    /* No one to talk to yet — don't hold space for a disabled field. */
+    body[data-peers="0"] #chatPanel, body[data-peers="0"] .msg-bar { display: none; }
+    .msg-bar .c-input { background: rgba(0,0,0,.45); backdrop-filter: blur(8px); }
+
     .big-btn, #connectedActions, #partyActions { flex: none; height: 54px; }
+    #connectedActions, #partyActions { grid-template-columns: 1fr 104px; gap: 10px; }
     #connectedActions .c-btn, #partyActions .c-btn { font-size: var(--fs-lg); }
-    .control-row { height: auto; flex-wrap: wrap; }
+
+    .control-row { height: auto; flex-wrap: wrap; row-gap: 8px; gap: 10px; }
+    .control-row .c-iconbtn {
+      width: 44px; height: 44px; font-size: 18px; border-radius: var(--r-pill);
+      background: rgba(0,0,0,.45); border-color: rgba(255,255,255,.16); backdrop-filter: blur(8px);
+    }
+    .control-row .c-iconbtn--active { background: var(--primary-tint); color: var(--primary); border-color: transparent; }
+    #connectedHelp { display: none; }
+    /* Kept — this is the one place the rules are restated after the gate.
+       Ordered last so it wraps onto its own line instead of squeezing the icons. */
+    #idleRules { order: 9; flex: 0 0 100%; margin: 0; font-size: var(--fs-xs); line-height: 1.4; }
+
+    #toast { bottom: calc(var(--dock-h) + 22px); }
     .warn-overlay { position: fixed; inset: 0; z-index: 80; }
+
+    /* ---- Tap to hide / reveal ---- */
+    .statusbar, .bottomrow, .report-flag, .remote-tile .c-tile__name, .shell::after { transition: opacity .24s ease, transform .24s ease; }
+    body.controls-hidden .statusbar { opacity: 0; pointer-events: none; transform: translateY(-14px); }
+    body.controls-hidden .bottomrow { opacity: 0; pointer-events: none; transform: translateY(18px); }
+    body.controls-hidden .report-flag { opacity: 0; pointer-events: none; }
+    body.controls-hidden .remote-tile .c-tile__name { opacity: 0; }
+    body.controls-hidden .shell::after { opacity: 0; }
+    @media (prefers-reduced-motion: reduce) {
+      #rightTile, .statusbar, .bottomrow, .report-flag, .remote-tile .c-tile__name, .shell::after { transition: none; }
+      body.controls-hidden .statusbar, body.controls-hidden .bottomrow { transform: none; }
+    }
   }
 </style>
 </head>
-<body class="c-root c-stage" data-state="idle">
+<body class="c-root c-stage" data-state="idle" data-peers="0">
 <h1 class="sr-only">Olumie: free random video chat with strangers, one-on-one or with a friend in Party Mode</h1>
 <div class="shell">
 
@@ -546,7 +689,10 @@ function render() {
   show(els.partyWaiting, waitingForFriend);
   show(els.searchPanel, phase === 'searching' && n === 0);
   show(els.remoteGrid, n > 0);
-  els.leftTile.style.background = n > 0 ? '#12151d' : 'var(--surface)';
+  els.leftTile.classList.toggle('has-remote', n > 0);
+  // Drives the phone layout: with nobody there your own camera is the whole
+  // stage; the moment someone arrives it demotes to a corner PiP.
+  document.body.dataset.peers = n;
 
   show(els.startBtn, phase === 'idle' && !party.active);
   show(els.partyActions, phase === 'idle' && party.active && n > 0);
@@ -562,7 +708,49 @@ function render() {
 
   setChatEnabled(n > 0);
   document.body.dataset.state = phase;
+  syncControls();
+  measureDock();   // the dock just changed shape; the things floating above it need the new height now
 }
+
+// --- Phone: floating controls that get out of the way ---------------------
+// Only while connected — idle and searching need their button on screen.
+// This never unmounts anything: the dock fades and stops taking taps, so the
+// video elements the NSFW sampler reads keep playing throughout.
+const CONTROLS_HIDE_MS = 4200;
+let controlsTimer = null;
+const isPhone = () => window.matchMedia('(max-width: 720px)').matches;
+function revealControls() {
+  document.body.classList.remove('controls-hidden');
+  clearTimeout(controlsTimer);
+  if (phase === 'connected' && isPhone()) controlsTimer = setTimeout(hideControls, CONTROLS_HIDE_MS);
+}
+function hideControls() {
+  if (phase !== 'connected' || !isPhone()) return;
+  // Never mid-sentence — the message field lives in the dock.
+  if (document.activeElement === els.chatInput) { controlsTimer = setTimeout(hideControls, CONTROLS_HIDE_MS); return; }
+  document.body.classList.add('controls-hidden');
+}
+function syncControls() {
+  if (phase === 'connected' && isPhone()) revealControls();
+  else { clearTimeout(controlsTimer); document.body.classList.remove('controls-hidden'); }
+}
+// Tap the video to put them away or bring them back. The status bar and dock
+// are siblings of .videorow, not children, so their own taps never land here.
+document.querySelector('.videorow').addEventListener('click', () => {
+  if (phase !== 'connected' || !isPhone()) return;
+  if (document.body.classList.contains('controls-hidden')) revealControls();
+  else { clearTimeout(controlsTimer); document.body.classList.add('controls-hidden'); }
+});
+[document.querySelector('.statusbar'), document.querySelector('.bottomrow')]
+  .forEach((el) => el.addEventListener('pointerdown', revealControls));
+
+// The dock's height is a layout input for the PiP and the idle copy, which
+// both float directly above it — and it changes with phase. Measured, not
+// guessed. Neither of those consumers affects the dock, so there's no loop.
+const dockEl = document.querySelector('.bottomrow');
+function measureDock() { document.documentElement.style.setProperty('--dock-h', dockEl.offsetHeight + 'px'); }
+if (window.ResizeObserver) new ResizeObserver(measureDock).observe(dockEl);
+else window.addEventListener('resize', measureDock);
 
 function startReportLastWindow() {
   clearTimeout(reportLastTimer);
@@ -1021,8 +1209,13 @@ function initAgeGate() {
     if (c) c.classList.add('is-selected');
     els.ageAccept.disabled = false;
   }
-  if (!ok || !myGender) els.ageGate.classList.add('show');   // re-prompt existing users once for gender
+  if (!ok || !myGender) { els.ageGate.classList.add('show'); return; }   // re-prompt existing users once for gender
+  startStageCamera();   // already accepted on a previous visit
 }
+// On a phone the idle screen IS your camera, so it's acquired once the gate is
+// accepted rather than at Start. Desktop keeps prompting on the first gesture —
+// its layout doesn't need the preview to be there.
+function startStageCamera() { if (isPhone()) initLocalMedia(); }
 els.genderChoose.querySelectorAll('.c-chip').forEach((chip) => chip.addEventListener('click', () => {
   els.genderChoose.querySelectorAll('.c-chip').forEach((c) => c.classList.remove('is-selected'));
   chip.classList.add('is-selected');
@@ -1035,6 +1228,7 @@ els.ageAccept.addEventListener('click', () => {
   try { localStorage.setItem('olumie_age_ok', '1'); localStorage.setItem('olumie_gender', myGender); } catch {}
   els.ageGate.classList.remove('show');
   renderIdleInterests();
+  startStageCamera();
 });
 els.ageLeave.addEventListener('click', () => { window.location.href = 'https://www.google.com'; });
 
@@ -1168,9 +1362,11 @@ els.ringBtn.addEventListener('click', () => {
 applyRingLight();
 
 // --- Boot -----------------------------------------------------------------
-phase = 'idle'; render(); updateShield(); initAgeGate(); initAuth();
+phase = 'idle'; render(); updateShield(); measureDock(); initAgeGate(); initAuth();
 fetchIce();   // warm the ICE/TURN config; refreshed again before each session
-// Camera is acquired on the first user gesture (tap the preview or a button).
+// Camera: on a phone, once the age gate is accepted (the idle screen is the
+// self-view). On desktop, still on the first user gesture — tap the preview or
+// hit Start.
 </script>
 </body>
 </html>
