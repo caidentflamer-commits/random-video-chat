@@ -156,8 +156,14 @@
        growing. Reach is min(percentage, pixel cap): the percentage keeps it
        proportional on a phone, the cap stops a wide desktop turning it into a wash. */
     --a: 0; --a2: 0;
-    --mx: min(2.4%, 22px); --my: min(2%, 20px);
-    --rx: min(6.5%, 64px); --ry: min(5.5%, 56px);
+    /* clamp(floor, preferred, cap), not min(): with a bare percentage a phone got
+       the THINNEST core (13px vs 34px on desktop), which is backwards — a phone in
+       a dim room is the case this exists for. The floor guarantees a usable band on
+       small screens; the cap stops a wide desktop turning into a wash.
+       Reach scales with the core so the soft tail keeps its width; a bigger core
+       against the old reach would squeeze the falloff and bring the hard edge back. */
+    --mx: clamp(26px, 3.6%, 34px); --my: clamp(22px, 3%, 30px);
+    --rx: clamp(58px, 8%, 78px);   --ry: clamp(50px, 7%, 68px);
     /* Fading to rgba(...,0) rather than `transparent` on purpose: `transparent`
        is rgba(0,0,0,0), and interpolating toward it drags a grey haze through
        the midpoint instead of a clean fade. */
