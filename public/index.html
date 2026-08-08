@@ -167,9 +167,12 @@
   }
   /* The four gradients overlap at the corners, so corners read brightest —
      which is how a real ring behaves, rather than a flat even border. */
-  .ringlight[data-level="1"] { opacity: 1; --a: .34; --a2: .13; --rx: min(6%, 55px);  --ry: min(5%, 55px); }
-  .ringlight[data-level="2"] { opacity: 1; --a: .60; --a2: .24; --rx: min(9%, 95px);  --ry: min(7%, 90px); }
-  .ringlight[data-level="3"] { opacity: 1; --a: .92; --a2: .40; --rx: min(13%, 140px); --ry: min(10%, 130px); }
+  /* --mx/--my (the bright core against the edge) stay put; only the tail beyond
+     the shoulder is shortened, so the light keeps its intensity at the frame and
+     simply stops bleeding toward the middle. */
+  .ringlight[data-level="1"] { opacity: 1; --a: .34; --a2: .13; --rx: min(3.5%, 34px); --ry: min(3%, 30px); }
+  .ringlight[data-level="2"] { opacity: 1; --a: .60; --a2: .24; --rx: min(5%, 48px);   --ry: min(4.2%, 42px); }
+  .ringlight[data-level="3"] { opacity: 1; --a: .92; --a2: .40; --rx: min(6.5%, 64px); --ry: min(5.5%, 56px); }
   #ringBtn.ring-on { color: #fff4e6; background: rgba(255,244,230,.15); }
   @media (prefers-reduced-motion: reduce) { .ringlight { transition: none; } }
   .perks { list-style: none; margin: 0; padding: 0; display: grid; gap: 9px; }
