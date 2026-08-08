@@ -145,18 +145,29 @@
      modals (50) so dialog text stays readable while it's on. */
   .ringlight {
     position: fixed; inset: 0; z-index: 40; pointer-events: none;
-    border: 0 solid #fff4e6; opacity: 0;
-    transition: border-width .18s ease, opacity .18s ease;
+    opacity: 0; transition: opacity .22s ease;
+    /* Tuning knobs — brightest at the very edge, fading inward.
+       --a  peak alpha at the edge      --a2 alpha at the shoulder
+       --mx/--my  where the shoulder sits    --rx/--ry  how far the glow reaches
+       Horizontal and vertical reach are separate: the same percentage on a tall
+       phone would push the top/bottom glow far deeper in pixels than the sides. */
+    --a: 0; --a2: 0; --mx: 4%; --my: 3%; --rx: 18%; --ry: 13%;
+    /* Fading to rgba(...,0) rather than `transparent` on purpose: `transparent`
+       is rgba(0,0,0,0), and interpolating toward it drags a grey haze through
+       the midpoint instead of a clean fade. */
+    background:
+      linear-gradient(to right,  rgba(255,244,230,var(--a)) 0%, rgba(255,244,230,var(--a2)) var(--mx), rgba(255,244,230,0) var(--rx)),
+      linear-gradient(to left,   rgba(255,244,230,var(--a)) 0%, rgba(255,244,230,var(--a2)) var(--mx), rgba(255,244,230,0) var(--rx)),
+      linear-gradient(to bottom, rgba(255,244,230,var(--a)) 0%, rgba(255,244,230,var(--a2)) var(--my), rgba(255,244,230,0) var(--ry)),
+      linear-gradient(to top,    rgba(255,244,230,var(--a)) 0%, rgba(255,244,230,var(--a2)) var(--my), rgba(255,244,230,0) var(--ry));
   }
-  .ringlight[data-level="1"] { border-width: 24px; opacity: .5; }
-  .ringlight[data-level="2"] { border-width: 44px; opacity: .8; box-shadow: inset 0 0 70px 10px rgba(255,244,230,.30); }
-  .ringlight[data-level="3"] { border-width: 70px; opacity: 1;  box-shadow: inset 0 0 90px 18px rgba(255,244,230,.45); }
-  /* A 70px frame eats a phone screen, so the steps shrink with the viewport. */
-  @media (max-width: 600px) {
-    .ringlight[data-level="1"] { border-width: 14px; }
-    .ringlight[data-level="2"] { border-width: 28px; }
-    .ringlight[data-level="3"] { border-width: 46px; }
-  }
+  /* The four gradients overlap at the corners, so corners read brightest —
+     which is how a real ring behaves, rather than a flat even border. */
+  .ringlight[data-level="1"] { opacity: 1; --a: .34; --a2: .13; --rx: 15%; --ry: 11%; }
+  .ringlight[data-level="2"] { opacity: 1; --a: .60; --a2: .24; --rx: 21%; --ry: 15%; }
+  .ringlight[data-level="3"] { opacity: 1; --a: .92; --a2: .40; --rx: 29%; --ry: 21%; }
+  /* Reach is percentage-based, so it scales with the viewport on its own — no
+     separate mobile sizes needed the way fixed border pixels required. */
   #ringBtn.ring-on { color: #fff4e6; background: rgba(255,244,230,.15); }
   @media (prefers-reduced-motion: reduce) { .ringlight { transition: none; } }
   .perks { list-style: none; margin: 0; padding: 0; display: grid; gap: 9px; }
