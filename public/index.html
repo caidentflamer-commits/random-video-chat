@@ -65,6 +65,11 @@
   #leftTile { background: var(--surface); }
   #leftTile.has-remote { background: #12151d; }
   .tile > video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: #000; }
+  /* Self-view reads as a mirror, the way every other video app does it — you
+     move left, the image moves left. Only your own preview: what the far end
+     receives is untouched, and so is what the NSFW sampler reads, since it
+     draws from the <video> source rather than its painted output. */
+  #local { transform: scaleX(-1); }
   .fill { position: absolute; inset: 0; }
 
   /* remote peer grid (mesh — 1 to 3 remote tiles) */
@@ -261,9 +266,6 @@
                   right .34s cubic-bezier(.4,0,.2,1), bottom .34s cubic-bezier(.4,0,.2,1),
                   border-radius .3s ease;
     }
-    /* Self-view reads as a mirror, like every other video app. CSS only — the
-       sampler draws from the <video> source, so moderation is unaffected. */
-    #local { transform: scaleX(-1); }
     body:not([data-peers="0"]) #rightTile {
       z-index: 6;
       right: calc(env(safe-area-inset-right, 0px) + 12px);
