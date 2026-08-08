@@ -8,16 +8,16 @@
      un-verifies that property. -->
 <meta name="google-site-verification" content="Svey5jK-1rZb9ZG1HTn-lkXDKsPp_rWmDDZVFQfax7k" />
 <meta name="google-site-verification" content="2i3BUiRPYOWa7xIKIR5Mkzz52ml8-g_knwfhco6Va64" />
-<title>Olumie — Free Random Video Chat</title>
-<meta name="description" content="Olumie is a free random video chat — meet new people one-on-one on live video, or team up with a friend in Party Mode. Moderated, 18+, no signup." />
+<title>Olumie | Free Random Video Chat</title>
+<meta name="description" content="Free random video chat. Meet people one-on-one on live video, or team up with a friend in Party Mode. Moderated, 18+, no signup." />
 <meta name="theme-color" content="#0d1117" />
 <link rel="canonical" href="https://olumie.chat/" />
 <meta property="og:type" content="website" />
-<meta property="og:title" content="Olumie — Free Random Video Chat" />
+<meta property="og:title" content="Olumie | Free Random Video Chat" />
 <meta property="og:description" content="Meet new people on live video, solo or with a friend in Party Mode. Moderated, 18+, no signup." />
 <meta property="og:url" content="https://olumie.chat/" />
 <meta name="twitter:card" content="summary" />
-<meta name="twitter:title" content="Olumie — Free Random Video Chat" />
+<meta name="twitter:title" content="Olumie | Free Random Video Chat" />
 <meta name="twitter:description" content="Meet new people on live video, solo or with a friend in Party Mode. Moderated, 18+, no signup." />
 
 <!-- In-browser NSFW detection (free, no API key). tfjs is the ML engine;
@@ -214,7 +214,7 @@
 </style>
 </head>
 <body class="c-root c-stage" data-state="idle">
-<h1 class="sr-only">Olumie — free random video chat with strangers, one-on-one or with a friend in Party Mode</h1>
+<h1 class="sr-only">Olumie: free random video chat with strangers, one-on-one or with a friend in Party Mode</h1>
 <div class="shell">
 
   <!-- Status bar -->
@@ -231,7 +231,7 @@
       <span class="shield" id="shield" title="Safety checks on">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--online)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 5 6v5.5c0 4.4 2.9 8.2 7 9.5 4.1-1.3 7-5.1 7-9.5V6l-7-3Z"/><path d="m9 12 2.2 2.2L15.5 10"/></svg>
       </span>
-      <button class="c-iconbtn" id="ringBtn" aria-label="Ring light" title="Ring light — off" style="width:30px;height:30px;font-size:14px">💡</button>
+      <button class="c-iconbtn" id="ringBtn" aria-label="Ring light" title="Ring light: off" style="width:30px;height:30px;font-size:14px">💡</button>
       <button class="c-iconbtn" id="settingsBtn" aria-label="Settings" style="width:30px;height:30px;font-size:14px">⚙</button>
     </div>
   </div>
@@ -243,7 +243,7 @@
       <div class="fill" id="idlePanel">
         <div id="idleDefault">
           <h2 class="c-h2">Ready when you are.</h2>
-          <p class="c-body c-muted" style="font-size:var(--fs-sm)">Meet one person at a time — or team up with a friend and meet people together.</p>
+          <p class="c-body c-muted" style="font-size:var(--fs-sm)">Meet one person at a time, or team up with a friend and meet people together.</p>
           <div class="idle-chips" id="idleInterests"></div>
           <div class="party-controls">
             <button class="c-btn c-btn--secondary c-btn--sm" id="createPartyBtn">👥 Create a party</button>
@@ -272,7 +272,7 @@
     <!-- Right tile: your camera -->
     <div class="c-tile tile" id="rightTile" style="background:radial-gradient(120% 90% at 50% 25%,#6b7690 0%,#343b4c 60%,#20242f 100%)">
       <video id="local" autoplay playsinline muted></video>
-      <div id="localPlaceholder">Tap to turn your camera on — or just hit Start</div>
+      <div id="localPlaceholder">Tap to turn your camera on, or just hit Start</div>
       <div class="warn-overlay" id="warn-overlay">Inappropriate content detected on your camera. You were disconnected.</div>
       <span class="c-tile__name" id="localName">You · this is what they'll see</span>
     </div>
@@ -306,8 +306,8 @@
       <div class="control-row">
         <button class="c-iconbtn c-iconbtn--active" id="micBtn" aria-label="Mute microphone" title="Mute microphone">🎙</button>
         <button class="c-iconbtn c-iconbtn--active" id="camBtn" aria-label="Turn camera off" title="Turn camera off">📷</button>
-        <span class="c-help" id="idleRules" style="margin-left:4px">18+ only. No nudity or harassment — report anyone, we read every one.</span>
-        <span class="c-help is-hidden" id="connectedHelp" style="margin-left:4px">Skip is instant — no goodbye needed.</span>
+        <span class="c-help" id="idleRules" style="margin-left:4px">18+ only. No nudity or harassment. Report anyone, we read every one.</span>
+        <span class="c-help is-hidden" id="connectedHelp" style="margin-left:4px">Skip is instant. No goodbye needed.</span>
         <button class="report-last is-hidden" id="reportLast">
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="var(--danger)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 21V4"/><path d="M5 4h11l-1.6 4L16 12H5z"/></svg>
           Report last
@@ -348,7 +348,7 @@
 <div class="c-modal is-hidden" id="interests-modal" role="dialog" aria-modal="true" aria-labelledby="interestsTitle">
   <div class="c-modal__backdrop" id="interestsBackdrop"></div>
   <div class="c-modal__sheet" style="width:min(520px,100%)">
-    <div><h3 class="c-h3" id="interestsTitle" style="font-size:var(--fs-md)">Your interests</h3><p class="c-body c-muted" style="font-size:var(--fs-sm)">Pick a few — we'll try to match you with someone who shares them.</p></div>
+    <div><h3 class="c-h3" id="interestsTitle" style="font-size:var(--fs-md)">Your interests</h3><p class="c-body c-muted" style="font-size:var(--fs-sm)">Pick a few and we'll try to match you with someone who shares them.</p></div>
     <input class="c-input" id="tag-search" type="text" placeholder="Search interests…" autocomplete="off" />
     <div id="tags"></div>
     <div class="c-modal__actions"><button class="c-btn" id="interestsDone">Done</button></div>
@@ -381,7 +381,7 @@
 <div class="c-modal is-hidden" id="auth-modal" role="dialog" aria-modal="true" aria-labelledby="authTitle">
   <div class="c-modal__backdrop" id="authBackdrop"></div>
   <div class="c-modal__sheet" style="width:min(400px,100%)">
-    <div><h3 class="c-h3" id="authTitle" style="font-size:var(--fs-md)">Sign in to Olumie</h3><p class="c-body c-muted" style="font-size:var(--fs-sm)">Signing in is optional; it saves your preferences and unlocks premium features.</p></div>
+    <div><h3 class="c-h3" id="authTitle" style="font-size:var(--fs-md)">Sign in to Olumie</h3><p class="c-body c-muted" style="font-size:var(--fs-sm)">Signing in is optional. It saves your preferences and lets you get Premium.</p></div>
     <!-- Shown only when Google is actually enabled on the Supabase project. -->
     <button class="c-btn c-btn--secondary c-btn--block is-hidden" id="authGoogle" style="gap:10px">
       <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true" focusable="false">
@@ -394,7 +394,7 @@
     </button>
     <div class="is-hidden" id="authOr" style="display:flex;align-items:center;gap:12px"><hr class="c-divider" style="flex:1" /><span class="c-help">or</span><hr class="c-divider" style="flex:1" /></div>
     <input class="c-input" id="authEmail" type="email" placeholder="you@example.com" autocomplete="email" />
-    <p class="c-help" id="authHint">We'll email you a magic link — no password.</p>
+    <p class="c-help" id="authHint">We'll email you a sign-in link. No password needed.</p>
     <p class="c-help is-hidden" id="authMsg"></p>
     <div class="c-modal__actions"><button class="c-btn c-btn--ghost" id="authCancel">Cancel</button><button class="c-btn" id="authSend">Send magic link</button></div>
   </div>
@@ -412,7 +412,7 @@
     <ul class="perks">
       <li>Match with women, men, or anyone</li>
       <li>Everything in the free version, unchanged</li>
-      <li>Cancel any time — it's one tap in your account</li>
+      <li>Cancel any time, it's one tap in your account</li>
     </ul>
     <p class="price" id="premiumPrice"></p>
     <!-- Renewal terms stated before checkout, not after — unexpected renewals are
@@ -441,7 +441,7 @@
     <p class="c-body c-muted" style="font-size:var(--fs-sm)">Olumie connects you with random people on live video. By entering, you confirm:</p>
     <ul class="age-list">
       <li>You are <strong>18 or older</strong>.</li>
-      <li>No <strong>nudity, harassment, or illegal content</strong> — ever.</li>
+      <li>No <strong>nudity, harassment, or illegal content</strong>. Ever.</li>
       <li>Anyone can report you. Reports are reviewed and can get you <strong>banned</strong>.</li>
     </ul>
     <div style="width:100%">
@@ -645,7 +645,7 @@ function closePremium() { show(els.premiumModal, false); }
 // mobile popup blockers don't eat it.
 function startCheckout() {
   if (!authUser) { closePremium(); toast('Sign in first, then upgrade to Premium.'); openAuth(); return; }
-  if (!premiumUrl) { els.premiumMsg.textContent = 'Premium isn’t available just yet — try again shortly.'; show(els.premiumMsg, true); return; }
+  if (!premiumUrl) { els.premiumMsg.textContent = 'Premium isn’t available just yet. Try again shortly.'; show(els.premiumMsg, true); return; }
   try {
     const u = new URL(premiumUrl);
     u.searchParams.set('client_reference_id', authUser.id);
@@ -833,7 +833,7 @@ function autoModerateRemote(peerId) {
   const entry = peers.get(peerId); if (!entry) return;
   entry.trips = 0;
   wsSend({ type: 'report', to: peerId, reason: 'auto: explicit content detected' });
-  toast('Skipped — inappropriate content detected.');
+  toast('Skipped: inappropriate content detected.');
   clearChat(); setSearchReason('searching'); phase = 'searching'; render();
 }
 function handleSelfViolation() {
@@ -1063,7 +1063,7 @@ function applySession(session) {
   authToken = (session && session.access_token) || null;
   authUser = (session && session.user) || null;
   els.authBtn.textContent = authUser ? (authUser.email ? authUser.email.split('@')[0] : 'Account') : 'Sign in';
-  els.authBtn.title = authUser ? 'Signed in — click to sign out' : 'Sign in';
+  els.authBtn.title = authUser ? 'Signed in. Click to sign out' : 'Sign in';
   if (authToken) { wsSend({ type: 'auth', token: authToken }); refreshPremium(); }
   else { isPremium = false; renderIdleInterests(); }   // signed out → relock the gender filter
 }
@@ -1099,7 +1099,7 @@ els.manageBtn.addEventListener('click', async () => {
     // getSession() refreshes when needed, so this is the live token.
     const { data } = await sb.auth.getSession();
     const token = data && data.session && data.session.access_token;
-    if (!token) { toast('Your session expired — sign in again.'); applySession(null); throw new Error('no session'); }
+    if (!token) { toast('Your session expired. Sign in again.'); applySession(null); throw new Error('no session'); }
     authToken = token;
     const r = await fetch('/portal', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token }),
@@ -1108,11 +1108,11 @@ els.manageBtn.addEventListener('click', async () => {
     if (r.ok && j.url) { location.href = j.url; return; }   // leaving the page; keep the spinner
     // Distinct message per failure — a single vague error makes this
     // undiagnosable, which cost us a debugging round trip already.
-    if (r.status === 401) toast('Your session expired — sign in again.');
+    if (r.status === 401) toast('Your session expired. Sign in again.');
     else if (r.status === 404) toast('No subscription found on this account.');
     else if (r.status === 503) toast('Subscriptions aren’t set up yet.');
-    else toast('Couldn’t open the subscription page' + (j.code ? ` (${j.code})` : '') + ' — try again.');
-  } catch (e) { if (e.message !== 'no session') toast('Couldn’t reach the server — check your connection.'); }
+    else toast('Couldn’t open the subscription page' + (j.code ? ` (${j.code})` : '') + '. Try again.');
+  } catch (e) { if (e.message !== 'no session') toast('Couldn’t reach the server. Check your connection.'); }
   els.manageBtn.classList.remove('is-loading');
 });
 // Google: one tap, and it re-authenticates on any device — no email round trip
@@ -1125,7 +1125,7 @@ els.authGoogle.addEventListener('click', async () => {
     const { error } = await sb.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: location.origin } });
     if (!error) return;
     els.authMsg.textContent = 'Couldn’t start Google sign-in: ' + error.message;
-  } catch { els.authMsg.textContent = 'Something went wrong — try again.'; }
+  } catch { els.authMsg.textContent = 'Something went wrong. Try again.'; }
   show(els.authMsg, true);
   els.authGoogle.classList.remove('is-loading');
 });
@@ -1136,7 +1136,7 @@ els.authSend.addEventListener('click', async () => {
   try {
     const { error } = await sb.auth.signInWithOtp({ email, options: { emailRedirectTo: location.origin } });
     els.authMsg.textContent = error ? ('Couldn’t send link: ' + error.message) : 'Check your email for the sign-in link.';
-  } catch { els.authMsg.textContent = 'Something went wrong — try again.'; }
+  } catch { els.authMsg.textContent = 'Something went wrong. Try again.'; }
   show(els.authMsg, true);
   els.authSend.classList.remove('is-loading');
 });
@@ -1150,13 +1150,13 @@ try { const s = localStorage.getItem('olumie_ringlight'); ringOn = !!s && s !== 
 function applyRingLight() {
   els.ringLight.classList.toggle('on', ringOn);
   els.ringBtn.classList.toggle('ring-on', ringOn);
-  els.ringBtn.title = ringOn ? 'Ring light — on' : 'Ring light — off';
+  els.ringBtn.title = ringOn ? 'Ring light: on' : 'Ring light: off';
   els.ringBtn.setAttribute('aria-pressed', ringOn ? 'true' : 'false');
   try { localStorage.setItem('olumie_ringlight', ringOn ? '1' : '0'); } catch {}
 }
 els.ringBtn.addEventListener('click', () => {
   ringOn = !ringOn;
-  if (ringOn) toast('Ring light on — turn your screen brightness up for the full effect.');
+  if (ringOn) toast('Ring light on. Turn your screen brightness up for the full effect.');
   applyRingLight();
 });
 applyRingLight();
