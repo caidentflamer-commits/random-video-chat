@@ -151,11 +151,13 @@
        --mx/--my  where the shoulder sits    --rx/--ry  how far the glow reaches
        Horizontal and vertical reach are separate: the same percentage on a tall
        phone would push the top/bottom glow far deeper in pixels than the sides. */
-       Reach is min(percentage, pixel cap): the percentage keeps it proportional on
-       a phone, the cap stops a wide desktop screen turning 13% into a 300px wash. */
+       Geometry is FIXED across levels — the levels change brightness only, never
+       size, so stepping through them reads as a dimmer rather than the light
+       growing. Reach is min(percentage, pixel cap): the percentage keeps it
+       proportional on a phone, the cap stops a wide desktop turning it into a wash. */
     --a: 0; --a2: 0;
-    --mx: min(1.8%, 16px); --my: min(1.5%, 16px);
-    --rx: min(13%, 140px); --ry: min(10%, 130px);
+    --mx: min(2.4%, 22px); --my: min(2%, 20px);
+    --rx: min(6.5%, 64px); --ry: min(5.5%, 56px);
     /* Fading to rgba(...,0) rather than `transparent` on purpose: `transparent`
        is rgba(0,0,0,0), and interpolating toward it drags a grey haze through
        the midpoint instead of a clean fade. */
@@ -167,12 +169,11 @@
   }
   /* The four gradients overlap at the corners, so corners read brightest —
      which is how a real ring behaves, rather than a flat even border. */
-  /* --mx/--my (the bright core against the edge) stay put; only the tail beyond
-     the shoulder is shortened, so the light keeps its intensity at the frame and
-     simply stops bleeding toward the middle. */
-  .ringlight[data-level="1"] { opacity: 1; --a: .34; --a2: .13; --rx: min(3.5%, 34px); --ry: min(3%, 30px); }
-  .ringlight[data-level="2"] { opacity: 1; --a: .60; --a2: .24; --rx: min(5%, 48px);   --ry: min(4.2%, 42px); }
-  .ringlight[data-level="3"] { opacity: 1; --a: .92; --a2: .40; --rx: min(6.5%, 64px); --ry: min(5.5%, 56px); }
+  /* Levels set alpha only — no --mx/--my/--rx/--ry here on purpose, so the glow
+     stays exactly the same size at every level and just gets brighter. */
+  .ringlight[data-level="1"] { opacity: 1; --a: .34; --a2: .13; }
+  .ringlight[data-level="2"] { opacity: 1; --a: .60; --a2: .24; }
+  .ringlight[data-level="3"] { opacity: 1; --a: .92; --a2: .40; }
   #ringBtn.ring-on { color: #fff4e6; background: rgba(255,244,230,.15); }
   @media (prefers-reduced-motion: reduce) { .ringlight { transition: none; } }
   .perks { list-style: none; margin: 0; padding: 0; display: grid; gap: 9px; }
