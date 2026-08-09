@@ -457,6 +457,8 @@
       <div class="control-row">
         <button class="c-iconbtn c-iconbtn--active" id="micBtn" aria-label="Mute microphone" title="Mute microphone">🎙</button>
         <button class="c-iconbtn c-iconbtn--active" id="camBtn" aria-label="Turn camera off" title="Turn camera off">📷</button>
+        <!-- Only in a 1-on-1 with someone you aren't already partied with. -->
+        <button class="c-btn c-btn--secondary c-btn--sm is-hidden" id="teamBtn">＋ Stay together</button>
         <span class="c-help" id="idleRules" style="margin-left:4px">18+ only. No nudity or harassment. Report anyone, we read every one.</span>
         <span class="c-help is-hidden" id="connectedHelp" style="margin-left:4px">Skip is instant. No goodbye needed.</span>
         <button class="report-last is-hidden" id="reportLast">
@@ -515,6 +517,23 @@
     <div class="c-field"><label>Language</label><div id="languageOptions" style="display:flex;flex-wrap:wrap;gap:8px;max-height:150px;overflow:auto"></div></div>
     <div class="c-field"><label>Meet <span class="c-muted" id="genderLock" style="font-weight:400;font-size:var(--fs-xs)"></span></label><div id="genderOptions" style="display:flex;flex-wrap:wrap;gap:8px"></div></div>
     <div class="c-modal__actions"><button class="c-btn" id="filtersDone">Done</button></div>
+  </div>
+</div>
+
+<!-- "Stay together" invite, from the stranger you're talking to. Mutual consent:
+     nothing changes for either of you until this is accepted. -->
+<div class="c-modal is-hidden" id="team-modal" role="dialog" aria-modal="true" aria-labelledby="teamTitle">
+  <div class="c-modal__backdrop" id="teamBackdrop"></div>
+  <div class="c-modal__sheet" style="width:min(400px,100%)">
+    <div>
+      <h3 class="c-h3" id="teamTitle" style="font-size:var(--fs-md)">Stay together?</h3>
+      <p class="c-body c-muted" style="font-size:var(--fs-sm)">They'd like to keep talking and meet new people with you. You'd stay connected and search as a pair — Skip finds someone new for both of you instead of ending this.</p>
+    </div>
+    <p class="c-help" style="margin:0">You can leave any time, and reporting works exactly the same.</p>
+    <div class="c-modal__actions">
+      <button class="c-btn c-btn--ghost" id="teamNo">No thanks</button>
+      <button class="c-btn" id="teamYes">Stay together</button>
+    </div>
   </div>
 </div>
 
@@ -660,6 +679,7 @@ const els = {
   filtersModal: $('filters-modal'), filtersBackdrop: $('filtersBackdrop'), filtersDone: $('filtersDone'), countryOptions: $('countryOptions'), languageOptions: $('languageOptions'),
   genderOptions: $('genderOptions'), genderLock: $('genderLock'),
   joinModal: $('join-modal'), joinBackdrop: $('joinBackdrop'), joinCodeInput: $('joinCodeInput'), joinCancel: $('joinCancel'), joinConfirm: $('joinConfirm'),
+  teamBtn: $('teamBtn'), teamModal: $('team-modal'), teamBackdrop: $('teamBackdrop'), teamNo: $('teamNo'), teamYes: $('teamYes'),
   toast: $('toast'), toastText: $('toastText'), banned: $('banned-screen'), sampler: $('sampler'), settingsBtn: $('settingsBtn'),
   ageGate: $('ageGate'), ageAccept: $('ageAccept'), ageLeave: $('ageLeave'), genderChoose: $('genderChoose'),
   authBtn: $('authBtn'), authModal: $('auth-modal'), authBackdrop: $('authBackdrop'), authEmail: $('authEmail'),
@@ -674,6 +694,7 @@ let localStream = null, ws = null;
 let sb = null, authToken = null, authUser = null, isPremium = false, premiumUrl = '';   // Supabase account (optional)
 const peers = new Map();              // peerId -> { pc, tile, video, placeholder, friend, name, stream }
 const party = { active: false, code: null };
+let teamPending = false;              // I offered to stay together, waiting on them
 let phase = 'idle';                   // 'idle' | 'searching' | 'connected'
 let nsfwModel = null, moderationState = 'off', tripCount = 0, strikes = 0, moderationTimer = null;
 let callStart = 0, callTimer = null, reportLastTimer = null, reportTarget = null;
@@ -706,6 +727,12 @@ function render() {
   show(els.idleRules, phase === 'idle');
   show(els.connectedHelp, phase === 'connected');
   show(els.editInterests, phase === 'searching');
+  // Offer to keep this person only in a genuine 1-on-1 — merging two solo
+  // parties is what keeps the group at the size the model supports.
+  if (phase !== 'connected') { teamPending = false; closeTeamPrompt(); }
+  show(els.teamBtn, phase === 'connected' && n === 1 && !party.active);
+  els.teamBtn.disabled = teamPending;
+  els.teamBtn.textContent = teamPending ? 'Asked to stay together…' : '＋ Stay together';
   if (phase !== 'searching') { show(els.reportLast, false); clearTimeout(reportLastTimer); }
 
   setChatEnabled(n > 0);
@@ -1015,8 +1042,12 @@ async function checkOwnCamera() {
 let remoteIdx = 0;
 async function checkOneRemote() {
   if (!nsfwModel) return;
-  // Watch strangers' video (not friends you invited). One per tick, rotating.
-  const list = [...peers.entries()].filter(([, e]) => !e.friend && e.stream && e.video && e.video.readyState >= 2);
+  // Everyone gets watched, friends included. The old exemption assumed a friend
+  // was someone you knew — but a party is reachable by sharing a 4-character
+  // code, or now by two strangers agreeing mid-call, so "friend" was never a
+  // statement about trust. Exempting it made opting out of moderation a
+  // two-tap operation. One peer per tick, rotating, so the cost is unchanged.
+  const list = [...peers.entries()].filter(([, e]) => e.stream && e.video && e.video.readyState >= 2);
   if (!list.length) return;
   const [id, entry] = list[remoteIdx++ % list.length];
   try {
@@ -1028,9 +1059,15 @@ async function checkOneRemote() {
 function autoModerateRemote(peerId) {
   const entry = peers.get(peerId); if (!entry) return;
   entry.trips = 0;
+  const wasFriend = entry.friend;
   wsSend({ type: 'report', to: peerId, reason: 'auto: explicit content detected' });
   toast('Skipped: inappropriate content detected.');
-  clearChat(); setSearchReason('searching'); phase = 'searching'; render();
+  clearChat();
+  // Reporting someone in your own party ends the party rather than putting you
+  // back in the queue — there's nothing left to search as.
+  if (wasFriend) { party.active = false; party.code = null; phase = 'idle'; }
+  else { setSearchReason('searching'); phase = 'searching'; }
+  render();
 }
 function handleSelfViolation() {
   tripCount = 0; strikes++;
@@ -1071,10 +1108,11 @@ function makeTile(peerId, entry) {
   const ph = document.createElement('div'); ph.className = 'tile-ph'; ph.textContent = 'Connecting…'; tile.appendChild(ph);
   const name = document.createElement('span'); name.className = 'c-tile__name';
   name.innerHTML = '<span class="c-dot c-dot--live"></span> ' + entry.name; tile.appendChild(name);
-  if (!entry.friend) {
-    const flag = document.createElement('button'); flag.className = 'report-flag'; flag.title = 'Report'; flag.innerHTML = FLAG_SVG;
-    flag.addEventListener('click', () => openReport(peerId, entry.name)); tile.appendChild(flag);
-  }
+  // Every tile is reportable — including friends. You can end up in a party
+  // with someone you just met, and "I can't report this person" is not a
+  // property you want attached to that.
+  const flag = document.createElement('button'); flag.className = 'report-flag'; flag.title = 'Report'; flag.innerHTML = FLAG_SVG;
+  flag.addEventListener('click', () => openReport(peerId, entry.name)); tile.appendChild(flag);
   entry.tile = tile; entry.video = video; entry.placeholder = ph;
   if (entry.stream) { video.srcObject = entry.stream; ph.style.display = 'none'; playRemote(entry); }
   els.remoteGrid.appendChild(tile);
@@ -1246,6 +1284,22 @@ function onMessage(event) {
       render(); break;
     case 'signal': onSignal(msg.from, msg.data); break;
     case 'chat': { const e = peers.get(msg.from); addChat(msg.text, 'them', e ? e.name : 'Stranger'); break; }
+    case 'team-invited': if (phase === 'connected') show(els.teamModal, true); break;
+    case 'team-declined': teamPending = false; toast('They’d rather keep meeting new people.'); render(); break;
+    case 'teamed': {
+      // The connection stays exactly as it is — only its meaning changes.
+      const e = peers.get(msg.peerId);
+      if (e) {
+        e.friend = true; e.name = 'Friend';
+        const label = e.tile && e.tile.querySelector('.c-tile__name');
+        if (label) label.innerHTML = '<span class="c-dot c-dot--live"></span> Friend';
+      }
+      party.active = true; party.code = null; teamPending = false;
+      phase = 'idle'; stopTimer(); closeTeamPrompt();
+      addChat('You’re a party now — hit “Find people” when you want to meet someone together.', 'sys');
+      toast('You’re a party now.');
+      render(); break;
+    }
     case 'report-ack': toast('Reported. You won’t be matched with them again.'); break;
     case 'account':
       isPremium = !!msg.premium;
@@ -1283,6 +1337,23 @@ els.joinConfirm.addEventListener('click', async () => {
 });
 els.joinCancel.addEventListener('click', () => show(els.joinModal, false));
 els.joinBackdrop.addEventListener('click', () => show(els.joinModal, false));
+
+// --- Stay together --------------------------------------------------------
+// Turns the stranger you're talking to into a party of two, so Skip finds
+// someone new for both of you instead of ending the conversation. Strictly
+// mutual: the offer changes nothing until it's accepted.
+function closeTeamPrompt() { show(els.teamModal, false); }
+els.teamBtn.addEventListener('click', () => {
+  if (teamPending) return;
+  teamPending = true; render();
+  wsSend({ type: 'team-invite' });
+});
+els.teamYes.addEventListener('click', () => { closeTeamPrompt(); wsSend({ type: 'team-accept' }); });
+// Dismissing is a decline, not a stall — otherwise they wait on a prompt that
+// was closed and never hear anything back.
+const declineTeam = () => { closeTeamPrompt(); wsSend({ type: 'team-decline' }); };
+els.teamNo.addEventListener('click', declineTeam);
+els.teamBackdrop.addEventListener('click', declineTeam);
 els.cancelPartyBtn.addEventListener('click', () => { wsSend({ type: 'leave-party' }); party.active = false; party.code = null; phase = 'idle'; render(); });
 els.findPeopleBtn.addEventListener('click', () => { setSearchReason('searching'); phase = 'searching'; render(); wsSend({ type: 'party-ready', ...matchPayload() }); });
 els.leavePartyBtn.addEventListener('click', () => { wsSend({ type: 'leave-party' }); clearStrangers(); [...peers.keys()].forEach(removePeer); party.active = false; party.code = null; phase = 'idle'; render(); });

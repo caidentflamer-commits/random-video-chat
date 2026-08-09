@@ -11,8 +11,15 @@ the trail to do that.
 - **Self-camera check** — nsfwjs samples the user's *own* camera; repeated
   explicit frames disconnect them (3 strikes → blocked). Fail-safe: if the model
   can't load, it's off rather than blocking everyone.
-- **Remote-camera check** — samples the *other* people's video too (strangers,
-  round-robin). On explicit content it auto-skips and **reports** them.
+- **Remote-camera check** — samples the *other* people's video too, round-robin,
+  one per tick. On explicit content it auto-skips and **reports** them.
+  **Everyone is sampled, including people in your own party**, and every tile
+  keeps its report flag. This used to exempt "friends", on the assumption that a
+  friend was someone you knew — but a party is reachable by sharing a 4-character
+  code, or by two strangers agreeing to stay together mid-call, so `friend` was
+  never a statement about trust. Exempting it made opting out of moderation a
+  two-tap operation. **Don't reintroduce the exemption**: `friend` means "stays
+  with me across Next", nothing more.
 - **Chat link filter** — links are blocked client-side and stripped server-side
   (anti-scam).
 - **Reports & bans** — anyone can report a peer; that bans them by IP (in-memory,
