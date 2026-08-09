@@ -1057,38 +1057,120 @@ function makeTile(peerId, entry) {
   els.remoteGrid.appendChild(tile);
   els.remoteGrid.dataset.n = peers.size;
 }
+// How long to give an ICE restart before calling the connection dead, and how
+// many dead connections in a row before we stop re-matching into the same wall.
+const ICE_RECOVERY_MS = 8000, MEDIA_FAIL_LIMIT = 3;
+let mediaFailures = 0;
+
 function addPeer(peerId, initiator, friend) {
   if (peers.has(peerId)) return;
   let pc;
   try { pc = new RTCPeerConnection({ iceServers: iceConfig }); }
   catch (e) { console.warn('Peer connection failed:', e); return; }
-  const entry = { pc, friend: !!friend, name: friend ? 'Friend' : 'Stranger' };
+  const entry = {
+    pc, friend: !!friend, name: friend ? 'Friend' : 'Stranger', initiator: !!initiator,
+    pending: [],                 // candidates that arrived before the remote description
+    chain: Promise.resolve(),    // serializes signal handling for this peer
+  };
   peers.set(peerId, entry);
   if (localStream) localStream.getTracks().forEach((t) => { try { pc.addTrack(t, localStream); } catch {} });
   pc.onicecandidate = (e) => { if (e.candidate) wsSend({ type: 'signal', to: peerId, data: { candidate: e.candidate } }); };
   pc.ontrack = (e) => { entry.stream = e.streams[0]; if (entry.video) { entry.video.srcObject = e.streams[0]; if (entry.placeholder) entry.placeholder.style.display = 'none'; } };
+  // A dead media path used to be a silent black tile — matched, chat working,
+  // no picture, and nothing anywhere saying so. Now it recovers or speaks up.
+  pc.oniceconnectionstatechange = () => {
+    const state = pc.iceConnectionState;
+    if (state === 'connected' || state === 'completed') {
+      clearTimeout(entry.iceTimer); entry.iceRetried = false; mediaFailures = 0; return;
+    }
+    // 'disconnected' is routinely transient and recovers on its own; only a
+    // 'failed' state means ICE has actually given up.
+    if (state !== 'failed') return;
+    if (entry.iceRetried) { handleMediaFailure(peerId); return; }
+    entry.iceRetried = true;
+    // Only the offering side restarts — if both send an offer at once they glare.
+    if (entry.initiator && typeof pc.restartIce === 'function') {
+      try { pc.restartIce(); negotiate(peerId); } catch (e) { console.warn('ICE restart failed:', e); }
+    }
+    clearTimeout(entry.iceTimer);
+    entry.iceTimer = setTimeout(() => {
+      const s = pc.iceConnectionState;
+      if (s !== 'connected' && s !== 'completed') handleMediaFailure(peerId);
+    }, ICE_RECOVERY_MS);
+  };
   makeTile(peerId, entry);
   render();
   if (initiator) negotiate(peerId);
+}
+// Media never came up. For a stranger that's worth leaving for someone else; for
+// a friend it isn't, since leaving would tear down the party.
+function handleMediaFailure(peerId) {
+  const entry = peers.get(peerId);
+  if (!entry || entry.failed) return;
+  entry.failed = true;
+  clearTimeout(entry.iceTimer);
+  if (entry.friend) {
+    if (entry.placeholder) { entry.placeholder.textContent = 'Couldn’t connect to your friend.'; entry.placeholder.style.display = 'grid'; }
+    return;
+  }
+  mediaFailures++;
+  // Repeatedly failing means the network is the problem, not the person — say so
+  // once and stop, rather than cycling through strangers who all look broken.
+  if (mediaFailures >= MEDIA_FAIL_LIMIT) {
+    mediaFailures = 0;
+    wsSend({ type: 'stop' }); clearChat(); phase = 'idle'; render();
+    toast('Video isn’t getting through on this network — usually a firewall. Try cellular or another Wi-Fi.');
+    return;
+  }
+  toast('Couldn’t connect the video. Finding someone else…');
+  wsSend({ type: 'next', ...matchPayload() });
+  clearChat(); setSearchReason('searching'); phase = 'searching'; render();
 }
 async function negotiate(peerId) {
   const entry = peers.get(peerId); if (!entry) return;
   try { const offer = await entry.pc.createOffer(); await entry.pc.setLocalDescription(offer); wsSend({ type: 'signal', to: peerId, data: { sdp: entry.pc.localDescription } }); }
   catch (e) { console.warn('Offer failed for', peerId, e); }
 }
-async function onSignal(from, data) {
+// Signals are handled one at a time per peer. Applying an SDP `await`s, and
+// anything that runs during that gap sees a peer connection with no remote
+// description yet — which is exactly when a candidate gets rejected. Handling
+// each message concurrently (one async call per WebSocket message) let that
+// happen whenever the two arrived close together, and a cold server delivers
+// them bunched, so it happened for real: matched, chat fine, no media.
+function onSignal(from, data) {
   let entry = peers.get(from);
   if (!entry) { addPeer(from, false, false); entry = peers.get(from); }   // signal before peer-join: answer defensively
   if (!entry) return;
-  try {
-    if (data.sdp) {
-      await entry.pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-      if (data.sdp.type === 'offer') { const ans = await entry.pc.createAnswer(); await entry.pc.setLocalDescription(ans); wsSend({ type: 'signal', to: from, data: { sdp: entry.pc.localDescription } }); }
-    } else if (data.candidate) { try { await entry.pc.addIceCandidate(new RTCIceCandidate(data.candidate)); } catch {} }
-  } catch (e) { console.warn('Signal error from', from, e); }
+  entry.chain = entry.chain
+    .then(() => applySignal(from, entry, data))
+    .catch((e) => console.warn('Signal error from', from, e));
+}
+async function applySignal(from, entry, data) {
+  if (entry.pc.signalingState === 'closed') return;
+  if (data.sdp) {
+    await entry.pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+    // Anything that arrived ahead of the description was held, not dropped.
+    const queued = entry.pending; entry.pending = [];
+    for (const c of queued) {
+      try { await entry.pc.addIceCandidate(new RTCIceCandidate(c)); }
+      catch (e) { console.warn('Held candidate rejected from', from, e); }
+    }
+    if (data.sdp.type === 'offer') {
+      const ans = await entry.pc.createAnswer();
+      await entry.pc.setLocalDescription(ans);
+      wsSend({ type: 'signal', to: from, data: { sdp: entry.pc.localDescription } });
+    }
+  } else if (data.candidate) {
+    // Candidates legitimately outrun the offer. Hold them instead of throwing
+    // them away — a lost candidate can be the one that would have connected.
+    if (!entry.pc.remoteDescription) { entry.pending.push(data.candidate); return; }
+    try { await entry.pc.addIceCandidate(new RTCIceCandidate(data.candidate)); }
+    catch (e) { console.warn('Candidate rejected from', from, e); }
+  }
 }
 function removePeer(peerId) {
   const entry = peers.get(peerId); if (!entry) return;
+  clearTimeout(entry.iceTimer);
   try { entry.pc.close(); } catch {}
   if (entry.tile) entry.tile.remove();
   peers.delete(peerId);

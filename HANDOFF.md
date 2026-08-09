@@ -326,6 +326,22 @@ whether to promote it.
   read from the cwd may be a different app entirely.
 
 ## Gotchas that have already cost time — read before repeating them
+- **A dropped ICE candidate is invisible, and it looks exactly like a NAT/TURN
+  problem.** Reported 2026-08-08: two people matched, chat worked, no audio or
+  video; an immediate retry from the same two networks worked fine. It was not
+  the network. `onSignal` ran one async call per WebSocket message, so the
+  `await setRemoteDescription` yielded and a candidate queued behind it called
+  `addIceCandidate` against a connection with no remote description — which
+  rejects, into a bare `catch {}`. The candidate was gone for good. Normally the
+  window is a few ms; **a cold Render instance delivers the offer and the first
+  burst of candidates bunched together**, which lands them squarely inside it.
+  Fixed by serializing signal handling per peer and holding early candidates
+  until the description is set. If you ever see "matched but no media" again,
+  check `iceConnectionState` and the console **before** concluding it's TURN —
+  intermittency across the same pair of networks means timing, not NAT.
+- **Render's free-tier sleep is not just a slow first load.** It changes signal
+  *timing*, which is enough to expose races that never show up locally. Starter
+  ($7/mo) removes the trigger, but fix the race regardless.
 - **DNS records are edited at Sav, not Cloudflare.** A lookup returns Cloudflare
   nameservers because Sav uses Cloudflare as its backend. There is no Cloudflare
   account. Records: Sav → Manage DNS Settings → **Custom DNS Records**.
