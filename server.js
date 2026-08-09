@@ -9,7 +9,8 @@
  *
  * Model:
  *   - Every socket has a stable `peerId`.
- *   - A PARTY is a durable group of 1 (solo) or 2 (friends joined by code).
+ *   - A PARTY is a durable group of 1 (solo) or 2 — joined by code, or formed
+ *     mid-call when two strangers both agree to stay together ("team up").
  *   - A SESSION is two parties matched together (2–4 people total). Everyone
  *     in a session is a full WebRTC mesh (a direct peer connection per pair).
  *   - Matchmaking pairs PARTIES: any two fit (1+1, 2+1, 2+2 all ≤ 4).
@@ -450,6 +451,34 @@ function match(pA, pB) {
   console.log(`Session: party#${pA.id}(${pA.members.length}) + party#${pB.id}(${pB.members.length})`);
 }
 
+// Two strangers decided to keep each other: `pA` absorbs `pB`, and the session
+// they met in ends without tearing anything down. Deliberately does NOT call
+// leavePair — they're already mesh-connected and that link is the whole point,
+// so it's relabelled rather than rebuilt (no renegotiation, no gap in video).
+// Only ever called with two solo parties, so the result is a party of 2 — the
+// same shape join-by-code produces, which is why nothing downstream changes.
+function mergeParties(pA, pB) {
+  const session = pA.session;
+  pB.members.forEach((m) => { m.party = pA; pA.members.push(m); });
+  pB.members = [];
+  searching = searching.filter((p) => p !== pA && p !== pB);
+  if (pB.code) { partiesByCode.delete(pB.code); pB.code = null; }
+  // Carry over who each of them just skipped, so the merged party doesn't get
+  // handed straight back to someone either of them left.
+  Object.assign(pA.recentlyLeft, pB.recentlyLeft);
+  if (session) session.parties.forEach((p) => { p.session = null; });
+  pA.session = null;
+}
+// Eligible only when it's genuinely one-on-one and neither side already has a
+// party — merging is what keeps the group at 2, the size the model supports.
+function canTeamUp(socket) {
+  const p = socket.party;
+  if (!p || !p.session || p.members.length !== 1) return null;
+  const other = p.session.parties.find((x) => x !== p);
+  if (!other || other.members.length !== 1) return null;
+  return { p, other, peer: other.members[0] };
+}
+
 // Dissolve a session. `reenqueue` is the list of parties that keep searching.
 function dissolveSession(session, reenqueue) {
   const [pA, pB] = session.parties;
@@ -556,6 +585,43 @@ wss.on('connection', (socket, req) => {
           leaveAll(socket);        // remove me from the shared party (tells my friend)
           newParty(socket);        // and give me a fresh solo party
         }
+        break;
+      }
+
+      // ---- Team up with the stranger you're talking to ----
+      // Mutual consent only: an invite is an offer, and nothing changes until
+      // the other person accepts. Held on the session, so skipping or stopping
+      // discards it for free — the session object goes with it.
+      case 'team-invite': {
+        const ok = canTeamUp(socket);
+        if (!ok) break;
+        const s = socket.party.session;
+        if (s.invite) break;                        // one offer at a time
+        s.invite = { from: socket.peerId, at: Date.now() };
+        send(ok.peer, { type: 'team-invited', peerId: socket.peerId });
+        break;
+      }
+      case 'team-decline': {
+        const ok = canTeamUp(socket);
+        if (!ok) break;
+        const s = socket.party.session;
+        if (!s.invite || s.invite.from === socket.peerId) break;   // can't decline your own
+        s.invite = null;
+        send(ok.peer, { type: 'team-declined' });
+        break;
+      }
+      case 'team-accept': {
+        const ok = canTeamUp(socket);
+        if (!ok) break;
+        const s = socket.party.session;
+        // Only the person who was invited can accept, and only their inviter.
+        if (!s.invite || s.invite.from !== ok.peer.peerId) break;
+        s.invite = null;
+        const me = socket, them = ok.peer;
+        mergeParties(ok.other, ok.p);               // inviter's party absorbs the accepter's
+        send(me, { type: 'teamed', peerId: them.peerId });
+        send(them, { type: 'teamed', peerId: me.peerId });
+        console.log(`Teamed up: ${me.peerId} + ${them.peerId}`);
         break;
       }
 

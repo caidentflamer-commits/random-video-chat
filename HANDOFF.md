@@ -31,6 +31,13 @@ people together with a friend). Monetized by a **Premium** subscription.
 - **Video chat:** WebRTC 1-on-1 **and Party Mode** — rooms + full mesh (≤4), STUN-only.
   Create/join a party by 4-char code, "Find people" together, Next keeps friends
   together (server room model; peer-addressed signaling; re-match cooldown).
+- **Stay together (2026-08-09):** mid-call, either person in a 1-on-1 can offer to
+  keep the other; on mutual accept the two solo parties **merge** into a party of
+  2 — the same shape join-by-code produces, so nothing downstream changed. The
+  existing WebRTC connection is **relabelled, not rebuilt**, so the conversation
+  doesn't drop. Offered only when both sides are solo (that's what keeps the
+  group at 2). Strictly mutual: an invite changes nothing until accepted, and
+  dismissing the prompt counts as a decline so nobody waits on a closed dialog.
 - **Matching filters:** interests, region, language (`compatible()` on the server).
 - **Gender filter (Premium):** everyone declares gender at the age gate; a
   "Meet: anyone/women/men" preference is **Premium-gated** (enforced server-side —
@@ -38,6 +45,10 @@ people together with a friend). Monetized by a **Premium** subscription.
 - **Moderation:** age/18+ gate (also collects gender), NSFW self-camera check +
   NSFW **remote-camera** auto-skip/report (nsfwjs), chat **link filter**, IP bans,
   report modal. Fail-safe (off if the model can't load).
+  ⚠ **No one is exempt from the remote check, friends included, and every tile
+  is reportable** (changed 2026-08-09). Friends used to be skipped, which meant
+  swapping a 4-char code — or teaming up mid-call — turned the scanner off for
+  both of you. `friend` is a routing flag, not a trust signal. See `MODERATION.md`.
 - **Report audit trail:** structured logs + `GET /admin/reports?key=ADMIN_KEY` +
   a **Discord webhook** (`REPORT_WEBHOOK_URL`) — working. Durable in Supabase.
 - **Accounts:** Supabase sign-in — **Google OAuth** (one tap) + **magic link**
