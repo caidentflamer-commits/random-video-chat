@@ -1042,6 +1042,29 @@ function handleSelfViolation() {
 }
 
 // --- Mesh peer connections ------------------------------------------------
+// `autoplay` is a request, not a guarantee. A browser — iOS especially — can
+// refuse to start a video element carrying an audio track, and a refusal looks
+// exactly like a failed connection from the outside: matched, chat working,
+// black tile, no sound, while ICE is perfectly healthy. So ask explicitly, and
+// if we're told no, say so on the tile instead of leaving it black.
+function playRemote(entry) {
+  if (!entry.video || !entry.stream) return;
+  let p;
+  try { p = entry.video.play(); } catch (e) { console.warn('Remote playback threw:', e); return; }
+  if (!p || typeof p.catch !== 'function') return;
+  p.then(() => {
+    entry.blocked = false;
+    if (entry.placeholder) entry.placeholder.style.display = 'none';
+  }).catch((err) => {
+    console.warn('Remote playback blocked:', err);
+    entry.blocked = true;
+    if (entry.placeholder) { entry.placeholder.textContent = 'Tap to start video'; entry.placeholder.style.display = 'grid'; }
+  });
+}
+// Any tap counts as the gesture a blocked element is waiting for, so retry all
+// of them rather than making the tile itself the only thing that works.
+document.addEventListener('click', () => { peers.forEach((e) => { if (e.blocked) playRemote(e); }); });
+
 function makeTile(peerId, entry) {
   const tile = document.createElement('div'); tile.className = 'remote-tile';
   const video = document.createElement('video'); video.autoplay = true; video.playsInline = true; tile.appendChild(video);
@@ -1053,7 +1076,7 @@ function makeTile(peerId, entry) {
     flag.addEventListener('click', () => openReport(peerId, entry.name)); tile.appendChild(flag);
   }
   entry.tile = tile; entry.video = video; entry.placeholder = ph;
-  if (entry.stream) { video.srcObject = entry.stream; ph.style.display = 'none'; }
+  if (entry.stream) { video.srcObject = entry.stream; ph.style.display = 'none'; playRemote(entry); }
   els.remoteGrid.appendChild(tile);
   els.remoteGrid.dataset.n = peers.size;
 }
@@ -1075,7 +1098,10 @@ function addPeer(peerId, initiator, friend) {
   peers.set(peerId, entry);
   if (localStream) localStream.getTracks().forEach((t) => { try { pc.addTrack(t, localStream); } catch {} });
   pc.onicecandidate = (e) => { if (e.candidate) wsSend({ type: 'signal', to: peerId, data: { candidate: e.candidate } }); };
-  pc.ontrack = (e) => { entry.stream = e.streams[0]; if (entry.video) { entry.video.srcObject = e.streams[0]; if (entry.placeholder) entry.placeholder.style.display = 'none'; } };
+  pc.ontrack = (e) => {
+    entry.stream = e.streams[0];
+    if (entry.video) { entry.video.srcObject = e.streams[0]; if (entry.placeholder) entry.placeholder.style.display = 'none'; playRemote(entry); }
+  };
   // A dead media path used to be a silent black tile — matched, chat working,
   // no picture, and nothing anywhere saying so. Now it recovers or speaks up.
   pc.oniceconnectionstatechange = () => {
