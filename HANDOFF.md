@@ -14,10 +14,13 @@ people together with a friend). Monetized by a **Premium** subscription.
 - **Front end:** `public/index.html` — one file, vanilla HTML/CSS/JS, **no build step**.
 - **Back end:** `server.js` — Node HTTP server (serves `public/`) + `ws` WebSocket
   server for signaling/matchmaking/moderation. Deps: `ws`, `@supabase/supabase-js`, `stripe`.
-- **Host:** Render **free tier** — still, as of 2026-08-07. **Push to `main` →
-  auto-deploys.** Free tier **sleeps after ~15 min idle** (first hit / webhook
-  after idle is delayed; Stripe retries). Upgrading to Starter ($7/mo) is the last
-  thing to do before sending real traffic.
+- **Host:** Render **Starter ($7/mo) since 2026-08-08** — upgraded from Free.
+  **Push to `main` → auto-deploys.** The instance **no longer sleeps**, so the
+  first visitor after a quiet spell isn't waiting ~a minute and Stripe webhooks
+  don't hit a cold instance. Changing instance type triggers a redeploy, which
+  restarts the process and drops any call in progress — don't do it while
+  someone's on. This also **removes cold starts as a variable** in any
+  intermittent-connection debugging (see Gotchas).
 - **Live URL:** `https://olumie.chat` (bought 2026-08-03 via Sav; auto-renew ~$28/yr).
   Render's `https://random-video-chat-azkk.onrender.com` keeps working — both
   resolve, but `olumie.chat` is canonical in the SEO tags.
@@ -96,14 +99,15 @@ WebSocket signaling and rewrites `x-forwarded-for`, which corrupts the IP bans i
 `getClientIp()` — a shared proxy IP could ban unrelated users en masse.
 
 ## What it costs (checked 2026-08-03 — re-verify before committing)
-**Still ~$0/mo of recurring spend**, plus the domain already paid for. The only
-thing actually bought so far is `olumie.chat` (~$5 year one, ~$28/yr after).
-Remaining to reach "launched properly": **Render Starter $7/mo**. Stripe sits
-outside these totals — no monthly fee, it takes a cut per charge.
+**~$7/mo of recurring spend** as of 2026-08-08 (Render Starter), plus the domain
+already paid for — `olumie.chat` (~$5 year one, ~$28/yr after). Nothing else is
+outstanding to reach "launched properly" on the hosting side. Stripe sits
+outside these totals — no monthly fee, it takes a cut per charge. TURN is the
+one thing still unbought, and free at this scale (see Next steps).
 
 | Service | Now | At launch | Notes |
 |---|---|---|---|
-| Render | Free | **$7/mo** | Starter. Effectively mandatory — free tier sleeps after ~15 min, so the first visitor waits ~1 min and Stripe webhooks hit a cold instance. |
+| Render | **$7/mo** | **$7/mo** | **Starter, bought 2026-08-08.** Free tier slept after ~15 min, so the first visitor waited ~1 min and Stripe webhooks hit a cold instance. Same 512 MB RAM as Free; you're paying for it to stay awake, not for size. |
 | Supabase | Free | **$0–35/mo** | Free (500 MB, 50k MAU) genuinely covers launch. Pro $25 + custom domain $10 buys only the auth-domain fix below. Free projects pause after ~1 week idle. |
 | Stripe | live | **2.9% + 30¢** | Per charge, +0.7% if using Billing. No monthly fee — you pay only when you earn. **Approved 2026-08-07.** |
 | Domain `olumie.chat` | **bought** | **~$28/yr** | Sav, registered 2026-08-03. ⚠ `.chat` renews far above its ~$5 signup price — auto-renew is the thing to keep on. |
@@ -277,10 +281,16 @@ whether to promote it.
 1. **Retry the Subscription button** after PR #26 deployed, and read the message —
    it now identifies the cause instead of saying "try again". See Current status.
 2. **Cancel Caiden's own subscription + refund the $5.45** (renews Sep 7).
-3. **Render Starter ($7/mo)** — do this immediately *before* telling anyone about
-   the site, not sooner. The free tier sleeps after ~15 min, so the first real
-   visitor waits ~a minute on a video-chat site and webhooks hit a cold instance.
-   No reason to pay while it's only being tested.
+3. ✅ **Render Starter ($7/mo) — DONE 2026-08-08.** Service → Settings → General →
+   Instance Type. Verified after the redeploy: 200s in ~100–450 ms, `/ice` and
+   `/config` still serving, env vars survived the instance change.
+   **TURN is the remaining pre-promotion item.** Cloudflare Realtime TURN, free
+   to 1,000 GB/mo, set `TURN_URLS` / `TURN_USERNAME` / `TURN_CREDENTIAL` in the
+   same Environment tab. `/ice` still returns STUN-only until then. Include a
+   `turns:` entry on 443 — on a locked-down work network that's often the only
+   one that gets through. Why it's worth doing before any traffic: a relay
+   failure burns *both* users in a match, and nobody reports it, they just
+   leave. See `TURN.md`.
 4. **Small tail, none blocking:** in Search Console, submit `sitemap.xml` and
    **Request Indexing** on the homepage (the property is verified; these are what
    shorten the first crawl from weeks to days) · point Stripe's **business URL** at
@@ -350,9 +360,11 @@ whether to promote it.
      rejection caught, retried on tap), so this should now announce itself.
   **How to tell them apart:** ICE failure now shows a message (skip / friend
   tile / "probably a firewall"). No message *and* no picture ⇒ not ICE.
-- **Render's free-tier sleep changes signal *timing*, not just load time** —
-  worth keeping in mind when something is intermittent, but note it was
-  *cleared* as the cause above. Starter ($7/mo) removes it as a variable.
+- **Cold starts are no longer a variable.** Render's free-tier sleep changed
+  signal *timing*, not just load time, which made it a tempting explanation for
+  anything intermittent — it was investigated and cleared above. Since the
+  Starter upgrade (2026-08-08) the instance doesn't sleep at all, so if
+  "matched but no media" recurs, cold start is ruled out by construction.
 - **DNS records are edited at Sav, not Cloudflare.** A lookup returns Cloudflare
   nameservers because Sav uses Cloudflare as its backend. There is no Cloudflare
   account. Records: Sav → Manage DNS Settings → **Custom DNS Records**.
