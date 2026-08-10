@@ -18,7 +18,40 @@ app falls back to STUN-only (exactly how it runs today).
 - The client fetches `/ice` at load and again before each session, and uses it
   for every `RTCPeerConnection`.
 
-## Option A — Managed TURN (fastest)
+## Option A — Cloudflare Realtime (built in, recommended)
+
+Cloudflare does **not** hand out a fixed username/password. It mints
+**short-lived** credentials from an API, so there is nothing static to paste —
+a snapshot would work until it expired and then fail silently, which looks
+exactly like the NAT problem TURN exists to fix. The server therefore mints
+them itself; you only supply the key.
+
+1. Cloudflare dashboard → **Realtime** → **TURN** → create a TURN key.
+2. Copy the **TURN Key ID** and the **TURN Key API Token**.
+3. On Render → Environment:
+
+```
+TURN_KEY_ID=<the key id>
+TURN_KEY_API_TOKEN=<the api token>
+TURN_TTL=86400        # optional, seconds; default 24h, minimum 600
+```
+
+Nothing else is needed — no `TURN_URLS`. Cloudflare returns its own endpoints,
+including **TLS on 443**, which is the one that gets through locked-down
+corporate Wi-Fi.
+
+How it behaves: credentials are minted at boot and cached, re-minted at **half
+the TTL** so a session never starts on a credential about to expire, and shared
+by all callers (one in-flight request, not one per visitor). If Cloudflare is
+unreachable the server logs `TURN: Cloudflare credential fetch failed` and
+serves STUN-only rather than failing `/ice` — the failure is not cached, so it
+recovers on the next request.
+
+⚠ Check the price on the key-creation screen. Cloudflare's docs describe TURN as
+free alongside their SFU and **$0.05/GB** otherwise; which applies to a
+standalone key was not clear from the docs, and relay traffic is real bandwidth.
+
+## Option B — Other managed TURN
 
 Pick a provider and create a TURN credential. Common choices with free/cheap
 tiers: **Cloudflare Realtime (TURN)**, **Metered / Open Relay**, **Twilio Network
@@ -36,12 +69,13 @@ TURN_CREDENTIAL=<the password/credential they gave you>
 `TURN_URLS` is a comma-separated list. Include a `turns:` (TLS, port 443/5349)
 entry too — it punches through the most restrictive firewalls.
 
-> Some providers (e.g. Cloudflare, Twilio) issue **time-limited** creds via their
-> own API. Easiest path there is to copy a current username/credential into the
-> static vars above; if you'd rather have the server mint them per-request from
-> the provider's API, tell me the provider and I'll add that integration.
+> Some providers (e.g. Twilio) issue **time-limited** creds via their own API.
+> Pasting a current username/credential into the static vars above works until
+> it expires — and then video fails silently. **Cloudflare is integrated
+> properly** (Option A); for another provider, say which and I'll add it the
+> same way.
 
-## Option B — Self-hosted coturn (HMAC secret)
+## Option C — Self-hosted coturn (HMAC secret)
 
 Run [coturn](https://github.com/coturn/coturn) on a small VM (a $5/mo box is
 plenty) with a shared-secret auth. In `turnserver.conf`:
