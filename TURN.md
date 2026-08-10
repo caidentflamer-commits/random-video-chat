@@ -47,9 +47,20 @@ unreachable the server logs `TURN: Cloudflare credential fetch failed` and
 serves STUN-only rather than failing `/ice` — the failure is not cached, so it
 recovers on the next request.
 
-⚠ Check the price on the key-creation screen. Cloudflare's docs describe TURN as
-free alongside their SFU and **$0.05/GB** otherwise; which applies to a
-standalone key was not clear from the docs, and relay traffic is real bandwidth.
+**Cost (checked 2026-08-09):** **1,000 GB/month free**, then **$0.05/GB**. The
+free allowance applies to standalone TURN, not just TURN-with-their-SFU, and is
+shared across both if you ever use both. **Only egress is billed** — traffic
+from clients *into* Cloudflare is free.
+
+What that buys here: a relayed 1-on-1 is two streams (each peer receives the
+other's), so at roughly 1 Mbit/s per stream it's about **0.9 GB per hour of
+relayed conversation** — call it **~1,100 hours/month free**. Since only a
+minority of pairs need a relay at all, total talk time before you pay is several
+times that. Past the allowance it's roughly **4–5¢ per relayed hour**.
+⚠ Party Mode is a full mesh: 4 people is 3 connections each, so a relayed party
+call burns bandwidth several times faster than a 1-on-1.
+The bitrate here is an assumption, not a measurement — `mediaFailRate` on
+`/admin/stats` is what will tell you the real relay share.
 
 ## Option B — Other managed TURN
 
