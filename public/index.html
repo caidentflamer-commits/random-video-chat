@@ -451,7 +451,12 @@
           <p class="c-body c-muted" style="font-size:var(--fs-sm)">Share this code with one friend:</p>
           <div class="party-code" id="partyCodeText">----</div>
           <p class="c-help">Waiting for them to join…</p>
-          <button class="c-btn c-btn--ghost c-btn--sm" id="cancelPartyBtn">Cancel party</button>
+          <div class="c-row" style="gap:8px;justify-content:center">
+            <!-- The link form of the code: opening it lands them straight in
+                 this party instead of typing the code into a modal. -->
+            <button class="c-btn c-btn--secondary c-btn--sm" id="sharePartyBtn">Share invite link</button>
+            <button class="c-btn c-btn--ghost c-btn--sm" id="cancelPartyBtn">Cancel party</button>
+          </div>
         </div>
       </div>
       <!-- searching -->
@@ -718,6 +723,7 @@ const els = {
   startBtn: $('startBtn'), cancelBtn: $('cancelBtn'), connectedActions: $('connectedActions'), skipBtn: $('skipBtn'), stopBtn: $('stopBtn'),
   partyActions: $('partyActions'), findPeopleBtn: $('findPeopleBtn'), leavePartyBtn: $('leavePartyBtn'),
   createPartyBtn: $('createPartyBtn'), joinPartyBtn: $('joinPartyBtn'), cancelPartyBtn: $('cancelPartyBtn'), supportBtn: $('supportBtn'),
+  sharePartyBtn: $('sharePartyBtn'),
   micBtn: $('micBtn'), camBtn: $('camBtn'),
   idleRules: $('idleRules'), connectedHelp: $('connectedHelp'), reportLast: $('reportLast'), editInterests: $('editInterests'),
   idleInterests: $('idleInterests'),
@@ -1418,6 +1424,14 @@ function onMessage(event) {
       render(); break;
     }
     case 'waiting': if (phase !== 'connected') { phase = 'searching'; render(); } break;
+    // Been queued a while with nobody to match: say so, instead of letting the
+    // "usually under 8s" spinner quietly become a lie on an empty network.
+    case 'quiet':
+      if (phase === 'searching') {
+        els.searchTitle.textContent = 'It’s quiet right now';
+        els.searchNote.textContent = 'not many people are on — we’ll connect you the moment someone shows up';
+      }
+      break;
     case 'stopped': phase = 'idle'; render(); break;
     case 'matched':
       phase = 'connected'; startTimer(); clearChat();
@@ -1496,6 +1510,39 @@ const declineTeam = () => { closeTeamPrompt(); wsSend({ type: 'team-decline' });
 els.teamNo.addEventListener('click', declineTeam);
 els.teamBackdrop.addEventListener('click', declineTeam);
 els.cancelPartyBtn.addEventListener('click', () => { wsSend({ type: 'leave-party' }); party.active = false; party.code = null; phase = 'idle'; render(); });
+
+// --- Party invite links ----------------------------------------------------
+// A party code can ride the URL: olumie.chat/#K7QX. Sharing was "go to the
+// site, tap Join, type K7QX" — a link that lands your friend straight in the
+// party is the version that survives being pasted into a group chat.
+// The hash is only consumed when it looks exactly like a code (4 chars from
+// the code alphabet) — Supabase magic-link redirects also arrive in the hash
+// and must pass through untouched.
+let inviteCode = null;
+{
+  const m = (location.hash || '').match(/^#([A-HJ-NP-Z2-9]{4})$/i);
+  if (m) { inviteCode = m[1].toUpperCase(); history.replaceState(null, '', location.pathname + location.search); }
+}
+// Runs once the age gate is out of the way — never before it; the gate is not
+// optional just because you arrived with an invite.
+async function consumeInvite() {
+  if (!inviteCode) return;
+  const code = inviteCode; inviteCode = null;   // one attempt; a dead code shouldn't haunt reloads
+  toast('Joining your friend’s party…');
+  if (!(await initLocalMedia())) return;        // camera refusal already explains itself on the tile
+  await ensureSocket();
+  wsSend({ type: 'join-party', code });         // invalid/full → existing party-error toast
+}
+els.sharePartyBtn.addEventListener('click', async () => {
+  if (!party.code) return;
+  const url = location.origin + '/#' + party.code;
+  // Native share sheet where it exists (phones); clipboard elsewhere. An
+  // AbortError just means they closed the sheet — not a reason to also copy.
+  try { if (navigator.share) { await navigator.share({ url }); return; } }
+  catch (e) { if (e && e.name === 'AbortError') return; }
+  try { await navigator.clipboard.writeText(url); toast('Invite link copied.'); }
+  catch { toast('Your invite link: ' + url); }
+});
 els.findPeopleBtn.addEventListener('click', () => { setSearchReason('searching'); phase = 'searching'; render(); wsSend({ type: 'party-ready', ...matchPayload() }); });
 els.leavePartyBtn.addEventListener('click', () => { wsSend({ type: 'leave-party' }); clearStrangers(); [...peers.keys()].forEach(removePeer); party.active = false; party.code = null; phase = 'idle'; render(); });
 
@@ -1533,6 +1580,7 @@ function initAgeGate() {
   }
   if (!ok || !myGender) { els.ageGate.classList.add('show'); return; }   // re-prompt existing users once for gender
   startStageCamera();   // already accepted on a previous visit
+  consumeInvite();      // arrived via a party link → straight into the party
 }
 // On a phone the idle screen IS your camera, so it's acquired once the gate is
 // accepted rather than at Start. Desktop keeps prompting on the first gesture —
@@ -1551,6 +1599,7 @@ els.ageAccept.addEventListener('click', () => {
   els.ageGate.classList.remove('show');
   renderIdleInterests();
   startStageCamera();
+  consumeInvite();
   // Sent once the socket exists — the gate is passed long before any
   // connection, so this rides along with the first thing that opens one.
   pendingStats.push('gate');

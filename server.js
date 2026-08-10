@@ -293,7 +293,14 @@ const server = http.createServer((req, res) => {
   if (urlPath === '/') urlPath = '/index.html';
   // Page loads, not unique people — a reload counts again. Nothing is stored
   // per-visitor, so distinguishing them isn't possible here, by design.
-  if (urlPath === '/index.html') bump('visits');
+  // Crawlers, link-preview fetchers and uptime monitors are skipped: once the
+  // site is indexed they'd inflate visits and quietly crush startRate. A UA
+  // check is heuristic, not perfect — a bot that lies looks like a person —
+  // but it catches the honest majority. No UA at all also isn't a browser.
+  if (urlPath === '/index.html') {
+    const ua = String(req.headers['user-agent'] || '');
+    if (ua && !BOT_RE.test(ua)) bump('visits');
+  }
 
   // ICE/TURN config for the client (fresh HMAC credentials each request).
   if (urlPath === '/ice') {
@@ -443,6 +450,9 @@ function normalizePrefs(msg, premium) {
 // age gate was accepted, and — the number this exists for — whether media
 // actually came up after a match. mediaFail vs mediaOk is the relay-failure
 // rate, i.e. the evidence for or against needing TURN.
+// Self-identifying non-humans: search crawlers, link-preview fetchers (a link
+// pasted in Discord/WhatsApp fetches the page), uptime monitors, CLI tools.
+const BOT_RE = /bot|crawl|spider|slurp|preview|monitor|pingdom|uptime|curl|wget|python-requests|headless|lighthouse|facebookexternalhit|whatsapp|telegram|discord|embedly|vkshare/i;
 const STAT_EVENTS = ['gate', 'mediaOk', 'mediaFail', 'playBlocked'];
 const stats = {
   since: new Date().toISOString(),
@@ -692,9 +702,16 @@ function enqueue(party) {
   }
 
   party.waitingSince = Date.now();
+  party.quietTold = false;
   searching.push(party);
   party.members.forEach((m) => send(m, { type: 'waiting' }));
 }
+
+// The searching copy promises a fast match, which an empty network can't keep.
+// Someone who waits 90 seconds against a spinner concludes the site is broken,
+// not quiet — so after a while, say the true thing instead. Told once per
+// search; skipping or re-searching resets it along with waitingSince.
+const QUIET_AFTER_MS = Math.max(5000, parseInt(process.env.QUIET_AFTER_MS || '45000', 10));
 
 // Pair up parties that have waited past FALLBACK_MS (still respecting filters).
 setInterval(() => {
@@ -711,6 +728,13 @@ setInterval(() => {
       break;
     }
   }
+  // Anyone still waiting after the quiet threshold gets told the truth once.
+  searching.forEach((p) => {
+    if (!p.quietTold && now - (p.waitingSince || now) >= QUIET_AFTER_MS) {
+      p.quietTold = true;
+      p.members.forEach((m) => send(m, { type: 'quiet' }));
+    }
+  });
 }, 2000);
 
 function match(pA, pB) {
