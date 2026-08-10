@@ -32,6 +32,14 @@ people together with a friend — or with a stranger you both chose to keep, via
 - **Video chat:** WebRTC 1-on-1 **and Party Mode** — rooms + full mesh (≤4), STUN-only.
   Create/join a party by 4-char code, "Find people" together, Next keeps friends
   together (server room model; peer-addressed signaling; re-match cooldown).
+- **Party invite links + cold-start honesty (2026-08-10):** a party code rides
+  the URL — `olumie.chat/#K7QX` lands your friend straight in the party after
+  the age gate (never before it), with a **Share invite link** button on the
+  waiting screen (`navigator.share` on phones, clipboard elsewhere). Only an
+  exact 4-char code is consumed from the hash; Supabase magic-link hashes pass
+  through untouched. And after 45s queued with nobody available
+  (`QUIET_AFTER_MS`), the spinner stops claiming "usually under 8s" and says
+  it's quiet — an honest dead end beats a dishonest spinner on an empty network.
 - **Stay together (2026-08-09):** mid-call, either person in a 1-on-1 can offer to
   keep the other; on mutual accept the two solo parties **merge** into a party of
   2 — the same shape join-by-code produces, so nothing downstream changed. The
@@ -117,6 +125,9 @@ people together with a friend — or with a stranger you both chose to keep, via
   socket only opens when someone presses Start, so a socket-based count would
   miss everyone who bounced. No localStorage (private mode) ⇒ not counted; there
   is deliberately no fingerprinting fallback.
+  Crawlers, link-preview fetchers and uptime monitors are **excluded from
+  `visits`** by user-agent (2026-08-10) — otherwise indexing would inflate it
+  and crush `startRate`. Heuristic: a bot that lies about its UA still counts.
   ⚠ Read them precisely: `visits` = **page loads** (a reload counts again);
   `people` = **browsers, not humans** (one person on a phone and a laptop is
   two, two people sharing a laptop are one); `returning` = repeat visits **since
