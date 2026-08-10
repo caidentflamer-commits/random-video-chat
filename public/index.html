@@ -346,8 +346,19 @@
     #chatEmpty { display: none; }
     /* No one to talk to yet — don't hold space for a disabled field. */
     body[data-peers="0"] #chatPanel, body[data-peers="0"] .msg-bar { display: none; }
-    .msg-bar { display: none; }
-    .msg-bar .c-input { background: rgba(0,0,0,.45); backdrop-filter: blur(8px); }
+    .msg-bar { display: none; height: auto; }
+    .msg-bar .c-input {
+      background: rgba(0,0,0,.45); backdrop-filter: blur(8px);
+      /* 16px is not a taste decision. iOS Safari zooms the whole page when you
+         focus an input smaller than 16px, and does NOT zoom back out when the
+         keyboard closes — you're left pinching the page back by hand. Every
+         other input here inherits .c-root's 16px; this one was overridden to
+         14px for the old always-visible bar, which is what caused it.
+         Taller too: the field only appears when chat is deliberately opened
+         now, so it can afford a proper touch target. */
+      font-size: 16px; height: 44px;
+    }
+    .msg-bar .c-btn { height: 44px; }
 
     body.chat-open .chat-panel { pointer-events: auto; max-height: 40vh; overflow-y: auto; }
     /* Opening it brings back everything that had faded — the history is intact,
