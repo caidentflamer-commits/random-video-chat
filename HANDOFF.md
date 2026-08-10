@@ -196,12 +196,12 @@ What still matters operationally:
   **and it may already have fired** (2026-08-08 no-media incident, cause still
   open, see Gotchas). Connection failures now announce themselves in-app.
 
-## ACTIVE THREAD: mobile UI rework — PR A SHIPPED, PR B open
+## Mobile UI rework — DONE (PR A 2026-08-08, PR B 2026-08-09)
 
-The mobile layout was cluttered and now reads as a **FaceTime call** (PR A,
-merged 2026-08-08 — see "Done" below). Remaining: **PR B** (chat as fading
-bubbles behind a toggle, n=1 report flag into the control row, iOS keyboard
-check on a real device).
+The mobile layout was cluttered; it now reads as a **FaceTime call**. Both parts
+shipped — see "Done" below for what and why. **The one thing never verified on a
+real device is the iOS keyboard** (the `visualViewport` lift): it's built and
+correct in a desktop emulator, but a real iPhone is the only proof.
 
 **The before-baseline (2026-08-08), kept for contrast.** On a 375×812 phone:
 - **Video occupies 5% of the screen.** FaceTime is effectively 100%.
@@ -256,10 +256,23 @@ layout at 1280×800 before/after).
 - Party mesh **stacks** into rows on a phone instead of a 2×2 grid.
 - `viewport-fit=cover` + `env(safe-area-inset-*)` padding on both overlays.
 
-**Still open (PR B):** chat is functional but plain — it should become fading
-bubbles with a 💬 toggle rather than a always-present log + field. The n=1
-report flag should move into the control row. iOS keyboard vs. `100dvh` +
-fixed overlays is untested — may need a `visualViewport` listener.
+### Done — chat, report flag, keyboard (PR B, 2026-08-09)
+
+- **Chat is closed by default on a phone.** Messages appear over the video and
+  fade out after 8s; the panel is `pointer-events: none` so taps fall through to
+  the video. 💬 in the control row pins the log open, brings up the field, and
+  carries an unread dot. Fading only ever **hides** — opening restores the whole
+  history (`body.chat-open .chat-msg.is-faded { opacity: 1 }`).
+- **The n=1 report flag moved into the control row** (🚩). With one person
+  there's no ambiguity about who you'd report, and it now fades with the other
+  controls instead of floating over the video. At n≥2 the per-tile flags stay,
+  because there you must choose who.
+- **`--kb` is the keyboard's height**, from `visualViewport`. iOS shrinks the
+  *visual* viewport but not the layout viewport, so the bottom-anchored dock
+  would otherwise sit underneath the keyboard you just opened. The dock, the
+  scrim and the PiP all offset by it. Always 0 on desktop.
+  ⚠ **Verified in an emulator only** — needs a real iPhone.
+- Controls can't auto-hide while the log is open (as well as while typing).
 
 ## Next steps
 

@@ -131,6 +131,9 @@
 
   .control-row { display: flex; gap: 8px; align-items: center; height: 34px; }
   .control-row .c-iconbtn { width: 34px; height: 34px; font-size: 15px; }
+  /* Phone-only controls. Desktop keeps the permanent chat panel and the
+     per-tile report flag, so neither of these has anything to do there. */
+  #chatBtn, #reportBtn { display: none; }
   .report-last {
     margin-left: auto; display: flex; align-items: center; gap: 6px; background: none; border: 0; padding: 0;
     cursor: pointer; font: var(--fw-medium) var(--fs-xs)/1 var(--font-display); color: var(--text-muted);
@@ -269,7 +272,7 @@
     body:not([data-peers="0"]) #rightTile {
       z-index: 6;
       right: calc(env(safe-area-inset-right, 0px) + 12px);
-      bottom: calc(var(--dock-h) + 14px);
+      bottom: calc(var(--dock-h) + var(--kb, 0px) + 14px);
       width: 29vw; max-width: 118px; height: 39vw; max-height: 158px;
       border-radius: 16px; box-shadow: 0 10px 28px rgba(0,0,0,.55);
     }
@@ -295,7 +298,7 @@
     /* ---- Scrim: one gradient for the whole bottom region, so the copy and
        the dock don't each stack their own and leave a band between them. ---- */
     .shell::after {
-      content: ''; position: fixed; left: 0; right: 0; bottom: 0; z-index: 8; pointer-events: none;
+      content: ''; position: fixed; left: 0; right: 0; bottom: var(--kb, 0px); z-index: 8; pointer-events: none;
       height: calc(var(--dock-h) + 200px);
       background: linear-gradient(to top, rgba(0,0,0,.82) 0%, rgba(0,0,0,.6) 35%, rgba(0,0,0,.24) 70%, rgba(0,0,0,0) 100%);
     }
@@ -312,7 +315,12 @@
 
     /* ---- Dock ---- */
     .bottomrow {
-      position: absolute; left: 0; right: 0; bottom: 0; z-index: 10; background: none;
+      position: absolute; left: 0; right: 0; z-index: 10; background: none;
+      /* --kb is the on-screen keyboard's height, measured from visualViewport.
+         iOS positions fixed/absolute boxes against the layout viewport, which
+         does not shrink for the keyboard — so without this the message field
+         you're typing into sits underneath it. */
+      bottom: var(--kb, 0px);
       display: flex; flex-direction: column; gap: 10px;
       padding: 0 calc(env(safe-area-inset-right, 0px) + 14px)
                calc(env(safe-area-inset-bottom, 0px) + 12px) calc(env(safe-area-inset-left, 0px) + 14px);
@@ -325,12 +333,37 @@
     .control-row { order: 3; }
     .msg-bar { order: 4; }
 
-    .chat-panel { background: none; border: 0; padding: 0; height: auto; max-height: 24vh; }
-    .chat-msg { text-shadow: 0 1px 6px rgba(0,0,0,.9); }
+    /* ---- Chat: bubbles over the video, a log only when you ask for one ----
+       Closed is the default. Messages drift in over the video and fade out on
+       their own, so a conversation you're not having costs no screen. Tapping
+       💬 pins the log open and brings up the field. */
+    .chat-panel {
+      background: none; border: 0; padding: 0; height: auto; max-height: 30vh;
+      overflow: hidden; pointer-events: none;   /* taps fall through to the video */
+    }
+    .chat-msg { text-shadow: 0 1px 6px rgba(0,0,0,.9); transition: opacity .45s ease; }
+    .chat-msg.is-faded { opacity: 0; }
     #chatEmpty { display: none; }
     /* No one to talk to yet — don't hold space for a disabled field. */
     body[data-peers="0"] #chatPanel, body[data-peers="0"] .msg-bar { display: none; }
+    .msg-bar { display: none; }
     .msg-bar .c-input { background: rgba(0,0,0,.45); backdrop-filter: blur(8px); }
+
+    body.chat-open .chat-panel { pointer-events: auto; max-height: 40vh; overflow-y: auto; }
+    /* Opening it brings back everything that had faded — the history is intact,
+       it was only hidden. */
+    body.chat-open .chat-msg.is-faded { opacity: 1; }
+    body.chat-open:not([data-peers="0"]) .msg-bar { display: flex; }
+
+    #chatBtn, #reportBtn { display: grid; position: relative; }
+    #chatBtn.has-unread::after {
+      content: ''; position: absolute; top: 5px; right: 5px; width: 9px; height: 9px;
+      border-radius: 50%; background: var(--primary); border: 2px solid rgba(0,0,0,.5);
+    }
+    /* With one person there's no ambiguity about who you'd be reporting, so the
+       flag moves off the tile and into the controls — where it also fades with
+       them instead of floating over the video. */
+    #remoteGrid[data-n="1"] .report-flag { display: none; }
 
     .big-btn, #connectedActions, #partyActions { flex: none; height: 54px; }
     #connectedActions, #partyActions { grid-template-columns: 1fr 104px; gap: 10px; }
@@ -457,6 +490,10 @@
       <div class="control-row">
         <button class="c-iconbtn c-iconbtn--active" id="micBtn" aria-label="Mute microphone" title="Mute microphone">🎙</button>
         <button class="c-iconbtn c-iconbtn--active" id="camBtn" aria-label="Turn camera off" title="Turn camera off">📷</button>
+        <!-- Phone only (hidden by CSS on desktop, which has a permanent chat
+             panel and a per-tile report flag). -->
+        <button class="c-iconbtn is-hidden" id="chatBtn" aria-label="Chat" title="Chat">💬</button>
+        <button class="c-iconbtn is-hidden" id="reportBtn" aria-label="Report this person" title="Report">🚩</button>
         <!-- Only in a 1-on-1 with someone you aren't already partied with. -->
         <button class="c-btn c-btn--secondary c-btn--sm is-hidden" id="teamBtn">＋ Stay together</button>
         <span class="c-help" id="idleRules" style="margin-left:4px">18+ only. No nudity or harassment. Report anyone, we read every one.</span>
@@ -680,6 +717,7 @@ const els = {
   genderOptions: $('genderOptions'), genderLock: $('genderLock'),
   joinModal: $('join-modal'), joinBackdrop: $('joinBackdrop'), joinCodeInput: $('joinCodeInput'), joinCancel: $('joinCancel'), joinConfirm: $('joinConfirm'),
   teamBtn: $('teamBtn'), teamModal: $('team-modal'), teamBackdrop: $('teamBackdrop'), teamNo: $('teamNo'), teamYes: $('teamYes'),
+  chatBtn: $('chatBtn'), reportBtn: $('reportBtn'),
   toast: $('toast'), toastText: $('toastText'), banned: $('banned-screen'), sampler: $('sampler'), settingsBtn: $('settingsBtn'),
   ageGate: $('ageGate'), ageAccept: $('ageAccept'), ageLeave: $('ageLeave'), genderChoose: $('genderChoose'),
   authBtn: $('authBtn'), authModal: $('auth-modal'), authBackdrop: $('authBackdrop'), authEmail: $('authEmail'),
@@ -753,7 +791,9 @@ function render() {
   show(els.editInterests, phase === 'searching');
   // Offer to keep this person only in a genuine 1-on-1 — merging two solo
   // parties is what keeps the group at the size the model supports.
-  if (phase !== 'connected') { teamPending = false; closeTeamPrompt(); }
+  if (phase !== 'connected') { teamPending = false; closeTeamPrompt(); setChatOpen(false); }
+  show(els.chatBtn, phase === 'connected' && n > 0);
+  show(els.reportBtn, phase === 'connected' && n === 1);
   show(els.teamBtn, phase === 'connected' && n === 1 && !party.active);
   els.teamBtn.disabled = teamPending;
   els.teamBtn.textContent = teamPending ? 'Asked to stay together…' : '＋ Stay together';
@@ -779,8 +819,9 @@ function revealControls() {
 }
 function hideControls() {
   if (phase !== 'connected' || !isPhone()) return;
-  // Never mid-sentence — the message field lives in the dock.
-  if (document.activeElement === els.chatInput) { controlsTimer = setTimeout(hideControls, CONTROLS_HIDE_MS); return; }
+  // Never mid-sentence, and never while the log is deliberately open — the
+  // message field and the history both live in the dock.
+  if (chatOpen || document.activeElement === els.chatInput) { controlsTimer = setTimeout(hideControls, CONTROLS_HIDE_MS); return; }
   document.body.classList.add('controls-hidden');
 }
 function syncControls() {
@@ -804,6 +845,22 @@ const dockEl = document.querySelector('.bottomrow');
 function measureDock() { document.documentElement.style.setProperty('--dock-h', dockEl.offsetHeight + 'px'); }
 if (window.ResizeObserver) new ResizeObserver(measureDock).observe(dockEl);
 else window.addEventListener('resize', measureDock);
+
+// How much of the screen the on-screen keyboard is covering. iOS shrinks the
+// *visual* viewport but not the layout viewport, so a bottom-anchored dock
+// stays put and ends up underneath the keyboard you just opened. Measuring it
+// and lifting the dock by that much is the fix; on desktop this is always 0.
+function measureKeyboard() {
+  const vv = window.visualViewport;
+  if (!vv) return;
+  const covered = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+  document.documentElement.style.setProperty('--kb', Math.round(covered) + 'px');
+}
+if (window.visualViewport) {
+  window.visualViewport.addEventListener('resize', measureKeyboard);
+  window.visualViewport.addEventListener('scroll', measureKeyboard);
+  measureKeyboard();
+}
 
 function startReportLastWindow() {
   clearTimeout(reportLastTimer);
@@ -991,13 +1048,29 @@ els.premiumBackdrop.addEventListener('click', closePremium);
 els.premiumGo.addEventListener('click', startCheckout);
 
 // --- Chat -----------------------------------------------------------------
+// On a phone a message shows itself for a while and then gets out of the way.
+// It is only hidden, never removed — opening the log brings the lot back.
+const CHAT_FADE_MS = 8000;
+let chatOpen = false, unreadCount = 0;
 function addChat(text, kind, who) {
   const div = document.createElement('div'); div.className = 'chat-msg ' + (kind === 'sys' ? 'sys' : '');
   if (kind === 'sys') div.textContent = text;
   else { const w = document.createElement('span'); w.className = 'who'; w.textContent = who; div.appendChild(w); div.appendChild(document.createTextNode(text)); }
   els.chatLog.appendChild(div); els.chatLog.scrollTop = els.chatLog.scrollHeight;
+  setTimeout(() => div.classList.add('is-faded'), CHAT_FADE_MS);
+  // Only their messages count as unread, and only while the log is shut.
+  if (kind === 'them' && !chatOpen) { unreadCount++; els.chatBtn.classList.add('has-unread'); }
 }
-function clearChat() { els.chatLog.innerHTML = ''; }
+function clearChat() { els.chatLog.innerHTML = ''; unreadCount = 0; els.chatBtn.classList.remove('has-unread'); }
+function setChatOpen(on) {
+  chatOpen = on;
+  document.body.classList.toggle('chat-open', on);
+  els.chatBtn.classList.toggle('c-iconbtn--active', on);
+  if (!on) return;
+  unreadCount = 0; els.chatBtn.classList.remove('has-unread');
+  els.chatLog.scrollTop = els.chatLog.scrollHeight;
+  revealControls();
+}
 function setChatEnabled(on) {
   els.chatInput.disabled = !on; els.chatSend.disabled = !on;
   show(els.chatEmpty, !on); show(els.chatLog, on);
@@ -1011,6 +1084,16 @@ function sendChat() {
   if (LINK_RE.test(text)) { toast('Links aren’t allowed in chat.'); return; }
   wsSend({ type: 'chat', text }); addChat(text, 'me', 'You'); els.chatInput.value = '';
 }
+els.chatBtn.addEventListener('click', () => {
+  setChatOpen(!chatOpen);
+  // Focusing has to happen in the click itself — iOS won't raise the keyboard
+  // from a later tick.
+  if (chatOpen && isPhone()) els.chatInput.focus();
+});
+els.reportBtn.addEventListener('click', () => {
+  const first = [...peers.entries()][0];
+  if (first) openReport(first[0], first[1].name);
+});
 els.chatSend.addEventListener('click', sendChat);
 els.chatInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); sendChat(); } });
 
