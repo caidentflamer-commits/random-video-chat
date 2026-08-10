@@ -234,6 +234,9 @@ const server = http.createServer((req, res) => {
   }
 
   if (urlPath === '/') urlPath = '/index.html';
+  // Page loads, not unique people — a reload counts again. Nothing is stored
+  // per-visitor, so distinguishing them isn't possible here, by design.
+  if (urlPath === '/index.html') bump('visits');
 
   // ICE/TURN config for the client (fresh HMAC credentials each request).
   if (urlPath === '/ice') {
@@ -258,6 +261,15 @@ const server = http.createServer((req, res) => {
     if (!process.env.ADMIN_KEY || key !== process.env.ADMIN_KEY) { res.writeHead(403); return res.end('Forbidden'); }
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
     return res.end(JSON.stringify({ count: recentReports.length, reports: recentReports.slice().reverse() }, null, 2));
+  }
+
+  // Aggregate usage counters. Same ADMIN_KEY gate as /admin/reports, and the
+  // same "inert until the env var is set" rule as everything else here.
+  if (urlPath === '/admin/stats') {
+    const key = new URLSearchParams((req.url.split('?')[1] || '')).get('key');
+    if (!process.env.ADMIN_KEY || key !== process.env.ADMIN_KEY) { res.writeHead(403); return res.end('Forbidden'); }
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    return res.end(JSON.stringify(statsSummary(), null, 2));
   }
 
   const filePath = path.join(PUBLIC_DIR, path.normalize(urlPath));
@@ -339,6 +351,45 @@ function normalizePrefs(msg, premium) {
   };
 }
 
+// ---- analytics ------------------------------------------------------------
+// First-party and aggregate-only: plain counters, no cookies, no third party,
+// no per-visitor records, nothing that identifies anyone. That's what keeps the
+// privacy policy short and true, and it's why there's no consent banner.
+//
+// Most of it the server already knows (matches, skips, reports). The client
+// only reports what happens inside the browser and nowhere else: whether the
+// age gate was accepted, and — the number this exists for — whether media
+// actually came up after a match. mediaFail vs mediaOk is the relay-failure
+// rate, i.e. the evidence for or against needing TURN.
+const STAT_EVENTS = ['gate', 'mediaOk', 'mediaFail', 'playBlocked'];
+const stats = {
+  since: new Date().toISOString(),
+  visits: 0, gate: 0, starts: 0, sessions: 0, teamups: 0,
+  skips: 0, stops: 0, mediaOk: 0, mediaFail: 0, playBlocked: 0,
+  reports: 0, bans: 0, peakOnline: 0,
+};
+function bump(name, by) { if (Object.prototype.hasOwnProperty.call(stats, name)) stats[name] += (by || 1); }
+// Percentages are the point — raw counters make you do arithmetic to answer
+// "is this bad?", and nobody does it.
+function statsSummary() {
+  const media = stats.mediaOk + stats.mediaFail;
+  const pct = (n, d) => (d > 0 ? Math.round((n / d) * 1000) / 10 : null);
+  return {
+    ...stats,
+    online: wss ? wss.clients.size : 0,
+    startRate: pct(stats.starts, stats.visits),        // visited → pressed Start
+    // Approximate: assumes both sides were solo, so it over-reports slightly
+    // once Party Mode is in use (a session can hold 3–4 people, not 2).
+    matchRate: pct(stats.sessions * 2, stats.starts),  // Start → actually matched
+    mediaFailRate: pct(stats.mediaFail, media),        // ⚠ the TURN question
+    // One merge per session, so this is NOT doubled the way matchRate is.
+    teamUpRate: pct(stats.teamups, stats.sessions),    // matched → chose to stay together
+  };
+}
+// A rollup into the logs every hour, so there's a history even though the
+// counters live in memory and reset on deploy. Render keeps logs 7 days.
+setInterval(() => { console.log('STATS ' + JSON.stringify(statsSummary())); }, 60 * 60 * 1000);
+
 // ---- report audit trail ---------------------------------------------------
 // Three layers: structured server logs (Render captures them), an in-memory
 // buffer viewable at /admin/reports (gated by ADMIN_KEY), and an optional
@@ -347,6 +398,7 @@ const recentReports = [];
 const MAX_REPORTS = 500;
 function logReport(rec) {
   rec.ts = new Date().toISOString();
+  bump('reports');
   console.log('REPORT ' + JSON.stringify(rec));
   recentReports.push(rec);
   if (recentReports.length > MAX_REPORTS) recentReports.shift();
@@ -446,6 +498,7 @@ function match(pA, pB) {
   // Mesh: connect every cross-party pair (within-party pairs already connected).
   pA.members.forEach((a) => pB.members.forEach((b) => connectPair(a, b, false)));
 
+  bump('sessions');
   const shared = intersect(pA.prefs.interests, pB.prefs.interests);
   [...pA.members, ...pB.members].forEach((m) => send(m, { type: 'matched', shared, size: pA.members.length + pB.members.length }));
   console.log(`Session: party#${pA.id}(${pA.members.length}) + party#${pB.id}(${pB.members.length})`);
@@ -497,6 +550,7 @@ function dissolveSession(session, reenqueue) {
 // ---- moderation / bans ----------------------------------------------------
 
 function banSocket(socket) {
+  bump('bans');
   bannedIps.add(socket.ip);
   console.log(`Banned IP ${socket.ip} (${socket.peerId})`);
   send(socket, { type: 'banned' });
@@ -549,6 +603,7 @@ wss.on('connection', (socket, req) => {
     if (banned && socket.readyState === socket.OPEN) { bannedIps.add(socket.ip); send(socket, { type: 'banned' }); socket.close(); }
   });
   console.log(`Connected ${socket.peerId} (${socket.ip})`);
+  if (wss.clients.size > stats.peakOnline) stats.peakOnline = wss.clients.size;
 
   socket.on('message', (raw) => {
     let msg;
@@ -621,6 +676,7 @@ wss.on('connection', (socket, req) => {
         mergeParties(ok.other, ok.p);               // inviter's party absorbs the accepter's
         send(me, { type: 'teamed', peerId: them.peerId });
         send(them, { type: 'teamed', peerId: me.peerId });
+        bump('teamups');
         console.log(`Teamed up: ${me.peerId} + ${them.peerId}`);
         break;
       }
@@ -635,8 +691,16 @@ wss.on('connection', (socket, req) => {
       case 'party-ready': {  // as a formed party
         let p = socket.party || newParty(socket);
         if (p.session) break;                     // already matched — ignore
+        bump('starts');
         p.prefs = normalizePrefs(msg, !!socket.isPremium);
         enqueue(p);
+        break;
+      }
+
+      // Aggregate counters only — a name from a fixed list, nothing else.
+      // Anything unrecognised is dropped rather than counted.
+      case 'stat': {
+        if (STAT_EVENTS.includes(msg.name)) bump(msg.name);
         break;
       }
 
@@ -656,6 +720,7 @@ wss.on('connection', (socket, req) => {
       case 'next': {
         const p = socket.party;
         if (!p) break;
+        bump('skips');
         if (msg.interests !== undefined) p.prefs = normalizePrefs(msg, !!socket.isPremium);
         if (p.session) dissolveSession(p.session, p.session.parties.slice());   // both parties re-search
         else if (!searching.includes(p)) enqueue(p);
@@ -664,6 +729,7 @@ wss.on('connection', (socket, req) => {
       case 'stop': {
         const p = socket.party;
         if (!p) break;
+        bump('stops');
         if (p.session) {
           const other = p.session.parties.find((x) => x !== p);
           dissolveSession(p.session, other ? [other] : []);   // this party goes idle; they re-search
