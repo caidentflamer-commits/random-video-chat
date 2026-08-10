@@ -342,6 +342,13 @@ whether to promote it.
   read from the cwd may be a different app entirely.
 
 ## Gotchas that have already cost time — read before repeating them
+- **Any input under 16px makes iOS Safari zoom the page, and it never zooms
+  back.** Reported on a real phone 2026-08-09 (the chat field was 14px, left
+  over from when the message bar was always on screen). **A desktop emulator
+  will not reproduce this** — it only shows up on a real device, so keep every
+  focusable field ≥16px on the phone layout rather than expecting to catch it.
+  Don't "fix" it with `maximum-scale=1` on the viewport meta: that works by
+  disabling pinch-zoom, trading an annoyance for an accessibility problem.
 - **"Matched but no audio or video" is still UNEXPLAINED — don't inherit a
   wrong answer for it.** Reported 2026-08-08 (Caiden at work ↔ sister at home,
   both on phones): matched, text chat worked, no media; an immediate retry from
