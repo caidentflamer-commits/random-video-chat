@@ -57,9 +57,10 @@ people together with a friend — or with a stranger you both chose to keep, via
   table (`is_premium`, `stripe_customer_id`). The Google button is hidden until
   the provider is enabled on the project (checked via `/auth/v1/settings`).
 - **Subscriptions:** `/stripe/webhook` (signature-verified) flips
-  `profiles.is_premium` on subscribe / off on cancel. Upgrade opens the Stripe
-  Payment Link with `client_reference_id=<userId>`. **LIVE MODE — taking real
-  money since 2026-08-07.** Premium is $4.99/mo.
+  `profiles.is_premium` on subscribe / off on cancel; it fails loudly — **400**
+  = bad signature (permanent), **500** = handler failure (Stripe retries).
+  Upgrade opens the Stripe Payment Link with `client_reference_id=<userId>`.
+  **LIVE MODE — taking real money since 2026-08-07.** Premium is $4.99/mo.
 - **Durable bans/reports:** written to Supabase when configured (confirmed
   `supabaseConnected: true`).
 - **SEO:** meta/OG tags, `robots.txt`, `sitemap.xml` — all now point at
@@ -140,91 +141,30 @@ The server accepts either the new (`SUPABASE_PUBLISHABLE_KEY`/`SECRET_KEY`) or
 classic (`ANON_KEY`/`SERVICE_KEY`) names.
 
 ## Current status
-- ✅ Durable bans/reports + Discord feed working.
-- ✅ **Magic-link sign-in works** (after switching Supabase to **Resend SMTP** —
-  the built-in email is rate-limited). Supabase **Site URL** must be the live URL
-  or links die at localhost.
-- ✅ **RESEND DOMAIN VERIFIED (2026-08-07) — magic link now works for everyone.**
-  `olumie.chat` is verified in Resend (us-east-1) and Supabase's SMTP sender is
-  `noreply@olumie.chat`. This closed a real gap: the previous shared
-  `onboarding@resend.dev` sender **only delivered to the Resend account owner**, so
-  every other person got "check your inbox" and nothing arrived. Google sign-in
-  masked it.
-  DNS (added at **Sav**, not Cloudflare — see Services): `resend._domainkey` TXT
-  (DKIM), `send` MX → `feedback-smtp.us-east-1.amazonses.com` pri **10**, `send`
-  TXT SPF, `_dmarc` TXT. All four confirmed resolving.
-  Verified by signing in with the owner's own address and confirming the mail came
-  **from `noreply@olumie.chat`**. Not tested: delivery to a non-owner address —
-  judged unnecessary, since that restriction is a property of the shared sender and
-  no longer applies once a domain is verified. **Resend → Emails is the safety
-  net**: a failed real-user link shows there as Bounced/Failed without them
-  reporting it.
-- ✅ **STRIPE APPROVED & LIVE (2026-08-07).** The high-risk category worry did not
-  materialise. Account status shows *"No active tasks"*, payouts are **enabled and
-  daily**, no restrictions. Live keys, live Payment Link
-  (`buy.stripe.com/28E28t9SV3eq3Me2Hx1oI00`, $4.99/mo) and a live webhook endpoint
-  are all configured; the 3 Stripe env vars on Render were swapped to live.
-  How to re-check status later: Settings → Business → **Account status** (tasks) and
-  **Balances** (payouts). The dashboard home is mostly noise.
-- ✅ **LIVE PREMIUM LOOP VERIFIED WITH A REAL CHARGE (2026-08-07).** $5.45 (incl.
-  tax) succeeded on a real card → webhook fired → `is_premium = true` and the
-  correct **live** `stripe_customer_id` stored. This is the thing test mode could
-  never prove, since live uses a different webhook secret.
-- ✅ **Premium loop verified in test mode first (2026-08-03)** with card
-  `4242 4242 4242 4242`; cancel flipped it back.
-- ✅ **`olumie.chat` IS LIVE (2026-08-04).** Sav's DNS (Cloudflare-backed
-  nameservers); apex `A → 216.24.57.1` (Render), `www` CNAME → the Render host.
-  HTTPS + certificate issued by Render. Canonical/`og:url`/robots/sitemap all
-  switched (PR #24). The Render URL still serves, so no dead links.
-  Getting here was fiddly: Sav's "coming soon" parking nameservers had to be
-  replaced, and Sav's **SSL / DDoS toggles must stay OFF** — they proxy the domain
-  and override the A record.
-- ✅ **Google consent screen PUBLISHED — "In production" (2026-08-07).** Anyone can
-  sign in; the test-user list no longer applies. The "100 user cap" shown on that
-  page does **not** bind us — it only applies to apps requesting unapproved
-  sensitive/restricted scopes, and ours (`email`/`profile`/`openid`) are all
-  non-sensitive.
-- ✅ **Self-serve cancellation shipped** (PR #25) + made diagnosable (PR #26).
-- ✅ **Subscription/cancel portal CONFIRMED WORKING (2026-08-07).** It failed at
-  first with a generic message; PR #26 made failures name themselves and the retry
-  reported **`StripeAuthenticationError`** — Stripe was rejecting the API key. The
-  live secret key on Render was invalid (Stripe showed `Last used —`, i.e. never
-  successfully used). Rotated the key, updated Render, portal opened.
-  ⚠ **Why nothing else caught it, and the lesson:** `STRIPE_SECRET_KEY` is used by
-  **exactly one** code path — `POST /portal`. The webhook verifies signatures with
-  local HMAC (`STRIPE_WEBHOOK_SECRET`, a different value, no API call), and premium
-  activation only writes to Supabase. So a completely invalid API key looked
-  perfectly healthy: real charges succeeded, `is_premium` flipped, `/config` served
-  the live link. **Nothing in this app proves the Stripe API key works except
-  opening the portal.** Rotating the key does *not* affect webhook endpoints.
-- ⚠ **OPEN: Caiden has a live subscription to his own app** — $4.99/mo, customer
-  `cus_V1xVyhI8rlmGlf`, plus a second one bought to retest the portal. Cancel and
-  refund from Stripe → Customers unless kept deliberately as a test subscriber.
-- ✅ **Google sign-in LIVE (2026-08-03, PR #21).** Provider enabled on the Supabase
-  project; the button auto-unhides via `/auth/v1/settings` (no redeploy needed to
-  turn it on/off). Handshake verified as far as Google's account picker. Magic link
-  remains as the fallback. Why it was added: magic link costs an email round trip
-  on every new browser, and iOS Safari evicts the stored session after ~7 days —
-  that round trip sat inside the upgrade funnel.
-- ✅ **REAL-DEVICE TESTING PASSED (2026-08-03)** — all four cases: solo 1-on-1
-  across **different networks** (Wi-Fi ↔ cellular), Party Mode (4-char code join,
-  "Find people" together, Next keeping friends together), and mobile browsers.
-  **Video connects on STUN alone — no TURN needed.** So `TURN_*` stays unset and
-  the relay costs nothing for now.
-  ⚠ Caveat: this is one pair of networks, not proof. NAT behaviour varies by
-  carrier and router, and a minority of real-world pairs typically still need a
-  relay. The plumbing is already built (`/ice`, `TURN.md`) — if users report a
-  black remote tile while chat still works, that's the signal to switch it on.
-  Cloudflare's first 1,000 GB/mo is free, so enabling it is cheap insurance.
-  **That exact signal may already have fired**: the 2026-08-08 no-media incident
-  (work ↔ home) — cause still open, see Gotchas. Failures now announce
-  themselves in-app, so a recurrence will identify itself.
-- ✅ **The webhook now fails loudly** (PR #20). It used to answer 200 even when it
-  wrote nothing: `.update().eq('id', …)` matches zero rows on a missing `profiles`
-  row and reports success, and DB errors were swallowed by a catch that still
-  returned 200 (mislabelled `bad signature`). Now: upsert; **400** = bad signature
-  (permanent), **500** = handler failure (Stripe retries, shows red). Sign-out also
-  clears `socket.isPremium` server-side, which previously survived until reconnect.
+
+**Everything a launch needs is live and verified** — details of each feature are
+in "What's built & live"; the debugging that got here is distilled into Gotchas.
+What still matters operationally:
+
+- **Stripe: live mode, approved 2026-08-07**, premium loop proven with a real
+  charge (test mode can't prove live — different webhook secret). Payment Link
+  `buy.stripe.com/28E28t9SV3eq3Me2Hx1oI00`, $4.99/mo. To re-check account
+  health: Settings → Business → **Account status** + **Balances**; the
+  dashboard home is mostly noise.
+- **Auth: Google sign-in live** (consent screen "In production" — the "100 user
+  cap" shown there does **not** bind us; it only applies to unapproved
+  sensitive scopes). **Magic link via Resend SMTP**, sender
+  `noreply@olumie.chat`, domain verified. ⚠ Supabase **Site URL** must stay the
+  live URL or links die at localhost. **Resend → Emails is the safety net** — a
+  failed real-user link shows there as Bounced/Failed without them reporting it.
+- **`olumie.chat` live since 2026-08-04** (Render HTTPS; the onrender.com URL
+  still serves, so no dead links). DNS rules live in Services/Gotchas.
+- **Real-device testing passed 2026-08-03 on STUN alone** — solo across
+  Wi-Fi ↔ cellular, Party Mode, mobile browsers. ⚠ One pair of networks, not
+  proof: a minority of real-world pairs need a relay. TURN plumbing is built
+  (`/ice`, `TURN.md`); a black remote tile while chat works is the signal —
+  **and it may already have fired** (2026-08-08 no-media incident, cause still
+  open, see Gotchas). Connection failures now announce themselves in-app.
 
 ## ACTIVE THREAD: mobile UI rework — PR A SHIPPED, PR B open
 
@@ -298,35 +238,28 @@ the domain is live, Google sign-in is published, and the premium loop has been
 proven with an actual charge. What's left is cleanup and a judgement call about
 whether to promote it.
 
-1. ✅ **Subscription button retried — CONFIRMED WORKING 2026-08-07** (see Current
-   status; the failure was a dead live API key, since rotated).
-2. **Cancel Caiden's own subscription + refund the $5.45** (renews Sep 7).
-3. ✅ **Render Starter ($7/mo) — DONE 2026-08-08.** Service → Settings → General →
-   Instance Type. Verified after the redeploy: 200s in ~100–450 ms, `/ice` and
-   `/config` still serving, env vars survived the instance change.
-   **TURN is the remaining pre-promotion item.** Cloudflare Realtime TURN, free
-   to 1,000 GB/mo, set `TURN_URLS` / `TURN_USERNAME` / `TURN_CREDENTIAL` in the
-   same Environment tab. `/ice` still returns STUN-only until then. Include a
+1. **TURN — the remaining pre-promotion item.** Cloudflare Realtime TURN, free
+   to 1,000 GB/mo: set `TURN_URLS` / `TURN_USERNAME` / `TURN_CREDENTIAL` on
+   Render (Environment tab). `/ice` returns STUN-only until then. Include a
    `turns:` entry on 443 — on a locked-down work network that's often the only
-   one that gets through. Why it's worth doing before any traffic: a relay
-   failure burns *both* users in a match, and nobody reports it, they just
-   leave. See `TURN.md`.
-4. **Small tail, none blocking:** in Search Console, submit `sitemap.xml` and
+   one that gets through. Why before any traffic: a relay failure burns *both*
+   users in a match, and nobody reports it, they just leave. See `TURN.md`.
+2. **Small tail, none blocking:** in Search Console, submit `sitemap.xml` and
    **Request Indexing** on the homepage (the property is verified; these are what
    shorten the first crawl from weeks to days) · point Stripe's **business URL** at
    `olumie.chat` · clear Stripe's **phone verification** prompt.
-   (Resend domain and Search Console verification — DONE, see status.)
+   (Resend domain and Search Console verification — both already DONE.)
    Expectation-setting on SEO: a new domain with no backlinks will not rank for
    "random video chat" or "omegle alternative" — those are contested by sites with
    years of history. It will rank for "olumie", which nobody searches yet. Growth
    for this category comes from TikTok/Reddit/Discord, where Party Mode is the
    actually-shareable idea. Treat search as a slow compound, not a launch channel.
-5. **Before promoting anywhere — moderation is now an ongoing commitment.** The
+3. **Before promoting anywhere — moderation is now an ongoing commitment.** The
    automated stack is a filter, not a backstop; the Discord report feed needs a
    human, and that human is Caiden. In this category that includes the possibility
    of illegal content involving minors, which carries real legal reporting
    obligations. Decide how a 2am report gets handled *before* it happens.
-6. **Optional, ~$35/mo — the auth-domain polish.** Google's account picker
+4. **Optional, ~$35/mo — the auth-domain polish.** Google's account picker
    shows the redirect target's domain, so today it reads *"to continue to
    yyterkkuqceodisnhehu.supabase.co"* — a random ref that looks like phishing to a
    consumer. A Supabase custom domain moves auth to e.g. `auth.olumie.chat` and the
@@ -336,11 +269,11 @@ whether to promote it.
    redirect URI must change at the same moment as the domain or sign-in breaks, so
    these are one coordinated change, not two. Deferred deliberately: worth
    revisiting once there's evidence real users drop off at sign-in, not before.
-7. **Deferred:** ad-free (needs an ad system + a category-friendly ad network —
+5. **Deferred:** ad-free (needs an ad system + a category-friendly ad network —
    mainstream networks reject this category, like payment processors), priority
    matching, more Premium perks. **TURN is no longer in this list** — the
    2026-08-08 matched-but-no-media incident (cause still open, NAT is the
-   leading hypothesis) promoted it to the pre-promotion item in step 3.
+   leading hypothesis) promoted it to item 1.
 
 ## Working conventions used this far
 - Change on a branch → PR → merge to `main` → Render deploys. (A few tiny fixes
