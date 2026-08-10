@@ -13,6 +13,12 @@
 <title>Olumie | Free Random Video Chat</title>
 <meta name="description" content="Free random video chat. Meet people one-on-one on live video, or team up with a friend in Party Mode. Moderated, 18+, no signup." />
 <meta name="theme-color" content="#0d1117" />
+<!-- Icons + manifest. iOS ignores manifest icons and reads apple-touch-icon;
+     the maskable entry is for Android launchers that apply their own shape. -->
+<link rel="icon" type="image/png" sizes="32x32" href="/icon-32.png" />
+<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
+<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+<link rel="manifest" href="/manifest.webmanifest" />
 <link rel="canonical" href="https://olumie.chat/" />
 <meta property="og:type" content="website" />
 <meta property="og:title" content="Olumie | Free Random Video Chat" />
@@ -444,6 +450,10 @@
             <button class="c-btn c-btn--secondary c-btn--sm" id="createPartyBtn">👥 Create a party</button>
             <button class="c-btn c-btn--secondary c-btn--sm" id="joinPartyBtn">Join a party</button>
             <button class="c-btn c-btn--ghost c-btn--sm is-hidden" id="supportBtn">❤ Support Olumie</button>
+            <!-- Android/Chrome only: appears when the browser offers install
+                 AND they've had at least one call this visit. iOS has no
+                 install API, so iPhone users never see it. -->
+            <button class="c-btn c-btn--secondary c-btn--sm is-hidden" id="installBtn">📲 Add to your phone</button>
           </div>
         </div>
         <div id="partyWaiting" class="is-hidden">
@@ -723,7 +733,7 @@ const els = {
   startBtn: $('startBtn'), cancelBtn: $('cancelBtn'), connectedActions: $('connectedActions'), skipBtn: $('skipBtn'), stopBtn: $('stopBtn'),
   partyActions: $('partyActions'), findPeopleBtn: $('findPeopleBtn'), leavePartyBtn: $('leavePartyBtn'),
   createPartyBtn: $('createPartyBtn'), joinPartyBtn: $('joinPartyBtn'), cancelPartyBtn: $('cancelPartyBtn'), supportBtn: $('supportBtn'),
-  sharePartyBtn: $('sharePartyBtn'),
+  sharePartyBtn: $('sharePartyBtn'), installBtn: $('installBtn'),
   micBtn: $('micBtn'), camBtn: $('camBtn'),
   idleRules: $('idleRules'), connectedHelp: $('connectedHelp'), reportLast: $('reportLast'), editInterests: $('editInterests'),
   idleInterests: $('idleInterests'),
@@ -751,6 +761,15 @@ const peers = new Map();              // peerId -> { pc, tile, video, placeholde
 const party = { active: false, code: null };
 let teamPending = false;              // I offered to stay together, waiting on them
 const pendingStats = [];              // counters recorded before a socket existed
+
+// --- Add to Home Screen ----------------------------------------------------
+// Chrome/Android surfaces install through this event; we hold it and offer a
+// button instead of letting the browser interrupt on its own schedule. iOS has
+// no install API at all — iPhone users add manually via Share, and the
+// apple-touch-icon is what makes that look right.
+let installPrompt = null, hadCall = false;
+window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installPrompt = e; render(); });
+window.addEventListener('appinstalled', () => { installPrompt = null; toast('Olumie is on your home screen.'); render(); });
 // A random id kept in this browser so repeat visits aren't counted as new
 // people. It identifies a browser, not a person: it's random, tied to no
 // account and no IP, sent to nobody but us, and clearing site data resets it.
@@ -797,6 +816,9 @@ function render() {
   document.body.dataset.peers = n;
 
   show(els.startBtn, phase === 'idle' && !party.active);
+  // Offered on the idle screen only after they've actually had a call — an
+  // install ask before the product has shown anything is just a popup.
+  show(els.installBtn, phase === 'idle' && !!installPrompt && hadCall);
   show(els.partyActions, phase === 'idle' && party.active && n > 0);
   show(els.cancelBtn, phase === 'searching');
   show(els.connectedActions, phase === 'connected');
@@ -1434,7 +1456,7 @@ function onMessage(event) {
       break;
     case 'stopped': phase = 'idle'; render(); break;
     case 'matched':
-      phase = 'connected'; startTimer(); clearChat();
+      phase = 'connected'; startTimer(); clearChat(); hadCall = true;
       addChat(msg.shared && msg.shared.length ? ('You all like: ' + msg.shared.join(', ')) : 'Matched! Say hi.', 'sys');
       render(); break;
     case 'signal': onSignal(msg.from, msg.data); break;
@@ -1533,6 +1555,11 @@ async function consumeInvite() {
   await ensureSocket();
   wsSend({ type: 'join-party', code });         // invalid/full → existing party-error toast
 }
+els.installBtn.addEventListener('click', async () => {
+  const p = installPrompt; installPrompt = null; render();   // one shot — Chrome won't let it fire twice
+  if (!p) return;
+  try { await p.prompt(); } catch {}
+});
 els.sharePartyBtn.addEventListener('click', async () => {
   if (!party.code) return;
   const url = location.origin + '/#' + party.code;

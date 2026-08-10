@@ -218,6 +218,7 @@ const MIME = {
   '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css',
   '.txt': 'text/plain; charset=utf-8', '.xml': 'application/xml; charset=utf-8',
   '.png': 'image/png', '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.json': 'application/json',
+  '.webmanifest': 'application/manifest+json',
 };
 
 // Strip links from chat (basic anti-scam). Bypassable client-side, so enforce here too.
