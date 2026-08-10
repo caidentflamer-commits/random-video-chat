@@ -153,7 +153,7 @@ one thing still unbought, and free at this scale (see Next steps).
 | Supabase | Free | **$0–35/mo** | Free (500 MB, 50k MAU) genuinely covers launch. Pro $25 + custom domain $10 buys only the auth-domain fix below. Free projects pause after ~1 week idle. |
 | Stripe | live | **2.9% + 30¢** | Per charge, +0.7% if using Billing. No monthly fee — you pay only when you earn. **Approved 2026-08-07.** |
 | Domain `olumie.chat` | **bought** | **~$28/yr** | Sav, registered 2026-08-03. ⚠ `.chat` renews far above its ~$5 signup price — auto-renew is the thing to keep on. |
-| TURN relay | — | Free <1 TB | Cloudflare: 1,000 GB/mo free, then $0.05/GB. Likely stays free at this scale. |
+| TURN relay | — | **Free** | Cloudflare: **1,000 GB/mo free, then $0.05/GB, egress only** (confirmed 2026-08-09; the free tier does cover standalone TURN). ≈0.9 GB per relayed 1-on-1 hour ⇒ ≈1,100 relayed hours/month free. Stays free at this scale. |
 | Resend · Google Cloud · GitHub · Search Console · Discord | Free | **Free** | No paid tier needed. Resend free = 3,000 emails/mo (100/day), 1 domain — domain verification is included. |
 
 Free-and-staying-free dependencies: NSFWJS, TensorFlow.js, jsDelivr, Google Fonts,
@@ -292,8 +292,10 @@ whether to promote it.
    `/ice` shows a `turn:` entry, then that `mediaFailRate` on `/admin/stats`
    drops. Why before any traffic: a relay failure burns *both* users in a
    match, and nobody reports it, they just leave. See `TURN.md`.
-   ⚠ Check the price on the key-creation screen — free alongside their SFU,
-   $0.05/GB otherwise, and which applies standalone wasn't clear from the docs.
+   **Cost (checked 2026-08-09): 1,000 GB/mo free, then $0.05/GB, egress only.**
+   The free tier does apply to standalone TURN. ≈0.9 GB per hour of relayed
+   1-on-1, so ≈1,100 relayed hours/month free — comfortably free at this scale.
+   ⚠ Party Mode is a mesh, so relayed party calls burn it several times faster.
 2. **Small tail, none blocking:** in Search Console, submit `sitemap.xml` and
    **Request Indexing** on the homepage (the property is verified; these are what
    shorten the first crawl from weeks to days) · point Stripe's **business URL** at
