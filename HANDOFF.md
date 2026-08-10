@@ -8,7 +8,8 @@ then the topic docs: `DEPLOY.md`, `MODERATION.md`, `SUPABASE.md`, `TURN.md`,
 ## What it is
 **Olumie** — a random-stranger video chat (OmeTV / Monkey style), 18+, moderated.
 Formerly "Random Video Chat" / "Openline". Free + solo, plus **Party Mode** (meet
-people together with a friend). Monetized by a **Premium** subscription.
+people together with a friend — or with a stranger you both chose to keep, via
+"Stay together"). Monetized by a **Premium** subscription.
 
 ## Stack & deploy
 - **Front end:** `public/index.html` — one file, vanilla HTML/CSS/JS, **no build step**.
@@ -132,7 +133,9 @@ Google STUN.
 Set: `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SECRET_KEY`,
 `SUPABASE_JWKS_URL`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`,
 `STRIPE_PAYMENT_LINK`, `REPORT_WEBHOOK_URL`.
-Not set: `ADMIN_KEY` (enables /admin/reports), `TURN_*` (relay), `SUPPORT_URL`.
+Not set: `ADMIN_KEY` (enables /admin/reports), `TURN_*` (relay).
+(`SUPPORT_URL` is **not** an env var — it's a constant at the top of
+`index.html`; the server never reads it.)
 The server accepts either the new (`SUPABASE_PUBLISHABLE_KEY`/`SECRET_KEY`) or
 classic (`ANON_KEY`/`SERVICE_KEY`) names.
 
@@ -213,6 +216,9 @@ classic (`ANON_KEY`/`SERVICE_KEY`) names.
   relay. The plumbing is already built (`/ice`, `TURN.md`) — if users report a
   black remote tile while chat still works, that's the signal to switch it on.
   Cloudflare's first 1,000 GB/mo is free, so enabling it is cheap insurance.
+  **That exact signal may already have fired**: the 2026-08-08 no-media incident
+  (work ↔ home) — cause still open, see Gotchas. Failures now announce
+  themselves in-app, so a recurrence will identify itself.
 - ✅ **The webhook now fails loudly** (PR #20). It used to answer 200 even when it
   wrote nothing: `.update().eq('id', …)` matches zero rows on a missing `profiles`
   row and reports success, and DB errors were swallowed by a catch that still
@@ -220,12 +226,14 @@ classic (`ANON_KEY`/`SERVICE_KEY`) names.
   (permanent), **500** = handler failure (Stripe retries, shows red). Sign-out also
   clears `socket.isPremium` server-side, which previously survived until reconnect.
 
-## ACTIVE THREAD: mobile UI rework (started 2026-08-08)
+## ACTIVE THREAD: mobile UI rework — PR A SHIPPED, PR B open
 
-Caiden's current focus. The mobile layout is cluttered and should feel like a
-**FaceTime call** instead.
+The mobile layout was cluttered and now reads as a **FaceTime call** (PR A,
+merged 2026-08-08 — see "Done" below). Remaining: **PR B** (chat as fading
+bubbles behind a toggle, n=1 report flag into the control row, iOS keyboard
+check on a real device).
 
-**The measurement that frames it.** On a 375×812 phone, on a video chat app:
+**The before-baseline (2026-08-08), kept for contrast.** On a 375×812 phone:
 - **Video occupies 5% of the screen.** FaceTime is effectively 100%.
 - 39 visible blocks stacked on one screen.
 - The layout is a `.videorow` (56% of the height) above a `.bottomrow` (38%),
@@ -233,12 +241,13 @@ Caiden's current focus. The mobile layout is cluttered and should feel like a
 - Idle state fills the largest tile with a text panel (`#idlePanel`, 55%) rather
   than with camera.
 
-**Direction.** FaceTime's shape: remote video full-bleed edge to edge; own camera
+**Direction (now built).** FaceTime's shape: remote video full-bleed edge to edge; own camera
 as a small rounded picture-in-picture in a corner; controls hidden until tap, then
 a floating row over the video; no permanent panels, no side-by-side tiles; status
 and chat overlaid rather than boxed.
 
-**Constraints that must survive the rework** (all verified working, don't break them):
+**Constraints that must survive the rework** (all held through PR A — re-verify
+anything PR B touches):
 - Party Mode is a mesh of up to 4, so the layout needs a multi-tile state as well
   as 1-on-1. `#remoteGrid` uses `data-n` for the count.
 - The NSFW check samples `els.local` and each remote `<video>`; those elements must
@@ -289,8 +298,8 @@ the domain is live, Google sign-in is published, and the premium loop has been
 proven with an actual charge. What's left is cleanup and a judgement call about
 whether to promote it.
 
-1. **Retry the Subscription button** after PR #26 deployed, and read the message —
-   it now identifies the cause instead of saying "try again". See Current status.
+1. ✅ **Subscription button retried — CONFIRMED WORKING 2026-08-07** (see Current
+   status; the failure was a dead live API key, since rotated).
 2. **Cancel Caiden's own subscription + refund the $5.45** (renews Sep 7).
 3. ✅ **Render Starter ($7/mo) — DONE 2026-08-08.** Service → Settings → General →
    Instance Type. Verified after the redeploy: 200s in ~100–450 ms, `/ice` and
@@ -329,8 +338,9 @@ whether to promote it.
    revisiting once there's evidence real users drop off at sign-in, not before.
 7. **Deferred:** ad-free (needs an ad system + a category-friendly ad network —
    mainstream networks reject this category, like payment processors), priority
-   matching, more Premium perks. **TURN is deferred on evidence now, not
-   assumption** — real-device testing showed STUN is enough (see Current status).
+   matching, more Premium perks. **TURN is no longer in this list** — the
+   2026-08-08 matched-but-no-media incident (cause still open, NAT is the
+   leading hypothesis) promoted it to the pre-promotion item in step 3.
 
 ## Working conventions used this far
 - Change on a branch → PR → merge to `main` → Render deploys. (A few tiny fixes
