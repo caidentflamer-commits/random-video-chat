@@ -280,10 +280,17 @@ const server = http.createServer((req, res) => {
   // Aggregate usage counters. Same ADMIN_KEY gate as /admin/reports, and the
   // same "inert until the env var is set" rule as everything else here.
   if (urlPath === '/admin/stats') {
-    const key = new URLSearchParams((req.url.split('?')[1] || '')).get('key');
-    if (!process.env.ADMIN_KEY || key !== process.env.ADMIN_KEY) { res.writeHead(403); return res.end('Forbidden'); }
-    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-    return res.end(JSON.stringify(statsSummary(), null, 2));
+    const q = new URLSearchParams((req.url.split('?')[1] || ''));
+    if (!process.env.ADMIN_KEY || q.get('key') !== process.env.ADMIN_KEY) { res.writeHead(403); return res.end('Forbidden'); }
+    const summary = statsSummary();
+    // HTML by default (this gets opened in a browser); JSON on request so curl
+    // and anything scripted keeps working exactly as before.
+    if (q.get('format') === 'json') {
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      return res.end(JSON.stringify(summary, null, 2));
+    }
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+    return res.end(statsPage(summary));
   }
 
   const filePath = path.join(PUBLIC_DIR, path.normalize(urlPath));
@@ -421,6 +428,129 @@ function statsSummary() {
 // A rollup into the logs every hour, so there's a history even though the
 // counters live in memory and reset on deploy. Render keeps logs 7 days.
 setInterval(() => { console.log('STATS ' + JSON.stringify(statsSummary())); }, 60 * 60 * 1000);
+
+// ---- the numbers page -----------------------------------------------------
+// Reuses clarity.css and the app's own dark tokens so it looks like the product
+// rather than a debug dump. JSON is still there at ?format=json for curl.
+function humanUptime(sinceIso) {
+  const ms = Date.now() - new Date(sinceIso).getTime();
+  const m = Math.floor(ms / 60000), h = Math.floor(m / 60), d = Math.floor(h / 24);
+  if (d) return `${d}d ${h % 24}h`;
+  if (h) return `${h}h ${m % 60}m`;
+  return `${m}m`;
+}
+// A rate is only meaningful once there's enough of it to mean anything; below
+// that this says "too early" rather than dressing up noise as a finding.
+function verdictForFailRate(rate, sample) {
+  if (rate === null || sample < 10) return { tone: 'idle', line: 'Not enough connections yet to read this.' };
+  if (rate === 0) return { tone: 'good', line: 'Every connection got through. No relay needed so far.' };
+  if (rate < 5) return { tone: 'good', line: 'Normal. A few failures are expected without a relay.' };
+  if (rate < 15) return { tone: 'warn', line: 'Worth watching. Around this level, TURN starts paying for itself.' };
+  return { tone: 'bad', line: 'High. This is the case TURN exists for — see TURN.md.' };
+}
+function statsPage(s) {
+  const n = (v) => (v === null || v === undefined ? '—' : v.toLocaleString('en-US'));
+  const pctText = (v) => (v === null ? '—' : v + '%');
+  const mediaTotal = s.mediaOk + s.mediaFail;
+  const verdict = verdictForFailRate(s.mediaFailRate, mediaTotal);
+  // Funnel bars are scaled to the widest step so the drop-off is visible at a
+  // glance; without that, everything after step one is a sliver.
+  const steps = [
+    { label: 'Page loads', value: s.visits, note: 'reloads counted again' },
+    { label: 'Browsers', value: s.people, note: 'not humans — see below' },
+    { label: 'Pressed Start', value: s.starts, note: pctText(s.startRate) + ' of browsers' },
+    { label: 'Got matched', value: s.sessions * 2, note: pctText(s.matchRate) + ' of starts' },
+    { label: 'Stayed together', value: s.teamups, note: pctText(s.teamUpRate) + ' of matches' },
+  ];
+  const widest = Math.max(1, ...steps.map((x) => x.value));
+  const bars = steps.map((x) => `
+    <div class="step">
+      <div class="step-head"><span class="step-label">${x.label}</span><span class="step-value">${n(x.value)}</span></div>
+      <div class="track"><div class="fill" style="width:${Math.max(1.5, (x.value / widest) * 100)}%"></div></div>
+      <div class="step-note">${x.note}</div>
+    </div>`).join('');
+
+  return `<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="robots" content="noindex, nofollow" />
+<title>Olumie · numbers</title>
+<link rel="stylesheet" href="/clarity.css" />
+<style>
+  body { --primary:#6d63ff; --online:#3fcf6b; --danger:#fb5f7a; --warning:#f0a92e;
+         margin:0; min-height:100vh; padding:28px var(--gutter) 56px; font-family:var(--font-display); }
+  .wrap { max-width:960px; margin:0 auto; }
+  header { display:flex; align-items:baseline; justify-content:space-between; gap:16px; flex-wrap:wrap; margin-bottom:24px; }
+  h1 { font-size:var(--fs-xl); margin:0; letter-spacing:-0.02em; }
+  .sub { color:var(--text-muted); font-size:var(--fs-sm); }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:12px; margin-bottom:28px; }
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:var(--r-lg); padding:16px 18px; }
+  .card .k { font-size:var(--fs-xs); color:var(--text-muted); text-transform:uppercase; letter-spacing:.08em; }
+  .card .v { font-size:var(--fs-2xl); font-weight:var(--fw-bold); line-height:1.1; margin-top:6px; letter-spacing:-0.03em; }
+  .card .foot { font-size:var(--fs-xs); color:var(--text-subtle); margin-top:4px; }
+  h2 { font-size:var(--fs-md); margin:0 0 12px; }
+  .panel { background:var(--surface); border:1px solid var(--border); border-radius:var(--r-lg); padding:18px 20px; margin-bottom:28px; }
+  .step { margin-bottom:14px; }
+  .step:last-child { margin-bottom:0; }
+  .step-head { display:flex; justify-content:space-between; align-items:baseline; font-size:var(--fs-sm); }
+  .step-value { font-weight:var(--fw-bold); font-variant-numeric:tabular-nums; }
+  .track { height:8px; background:var(--surface-2); border-radius:var(--r-pill); overflow:hidden; margin-top:6px; }
+  .fill { height:100%; background:var(--primary); border-radius:var(--r-pill); }
+  .step-note { font-size:var(--fs-xs); color:var(--text-subtle); margin-top:4px; }
+  .verdict { border-radius:var(--r-lg); padding:18px 20px; border:1px solid; margin-bottom:28px; }
+  .verdict .rate { font-size:var(--fs-3xl); font-weight:var(--fw-bold); letter-spacing:-0.04em; line-height:1; }
+  .verdict .line { margin-top:8px; font-size:var(--fs-sm); }
+  .verdict .meta { margin-top:6px; font-size:var(--fs-xs); opacity:.75; }
+  .good { border-color:var(--online); background:var(--online-tint); color:var(--online); }
+  .warn { border-color:var(--warning); background:var(--warning-tint); color:var(--warning); }
+  .bad  { border-color:var(--danger); background:var(--danger-tint); color:var(--danger); }
+  .idle { border-color:var(--border); background:var(--surface); color:var(--text-muted); }
+  footer { color:var(--text-subtle); font-size:var(--fs-xs); line-height:1.7; border-top:1px solid var(--border); padding-top:16px; }
+  footer strong { color:var(--text-muted); }
+  a { color:var(--primary); }
+  .dot { width:8px; height:8px; border-radius:50%; background:var(--online); display:inline-block; margin-right:6px; }
+</style></head>
+<body class="c-root c-stage"><div class="wrap">
+
+<header>
+  <div>
+    <h1>Olumie · numbers</h1>
+    <div class="sub"><span class="dot"></span>${n(s.online)} online now · counting for ${humanUptime(s.since)}</div>
+  </div>
+  <div class="sub">Refreshes every 30s · <a href="?format=json">JSON</a></div>
+</header>
+
+<div class="grid">
+  <div class="card"><div class="k">Browsers</div><div class="v">${n(s.people)}</div><div class="foot">${n(s.returning)} came back · ${pctText(s.returnRate)}</div></div>
+  <div class="card"><div class="k">Conversations</div><div class="v">${n(s.sessions)}</div><div class="foot">${n(s.teamups)} became parties</div></div>
+  <div class="card"><div class="k">Peak online</div><div class="v">${n(s.peakOnline)}</div><div class="foot">at once, since last deploy</div></div>
+  <div class="card"><div class="k">Reports</div><div class="v">${n(s.reports)}</div><div class="foot">${n(s.bans)} bans issued</div></div>
+</div>
+
+<h2>Where people drop off</h2>
+<div class="panel">${bars}</div>
+
+<h2>Connection health</h2>
+<div class="verdict ${verdict.tone}">
+  <div class="rate">${verdict.tone === 'idle' ? '—' : pctText(s.mediaFailRate)}</div>
+  <div class="line">${verdict.line}</div>
+  <div class="meta">${n(s.mediaFail)} failed of ${n(mediaTotal)} attempts · ${n(s.playBlocked)} blocked by autoplay (not a network fault)</div>
+</div>
+
+<footer>
+  <p><strong>Read these carefully.</strong> “Page loads” counts reloads again.
+  “Browsers” means browsers, not people — one person on a phone and a laptop is two,
+  two people sharing a laptop is one. Private-browsing visitors aren’t counted at all.</p>
+  <p><strong>Everything here resets on deploy</strong>, because the counters live in
+  memory. Counting since ${new Date(s.since).toUTCString()}. For history, the server
+  writes a <code>STATS</code> line to the Render logs every hour (kept 7 days).</p>
+</footer>
+
+</div>
+<script>setTimeout(function () { location.reload(); }, 30000);</script>
+</body></html>`;
+}
 
 // ---- report audit trail ---------------------------------------------------
 // Three layers: structured server logs (Render captures them), an in-memory

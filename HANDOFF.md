@@ -100,8 +100,9 @@ people together with a friend — or with a stranger you both chose to keep, via
   the client reports only what happens in the browser (`gate`, `mediaOk`,
   `mediaFail`, `playBlocked`) via a `stat` message on the existing socket, against
   a fixed whitelist.
-  **Read it at `GET /admin/stats?key=ADMIN_KEY`** — same gate as `/admin/reports`,
-  and **403 until `ADMIN_KEY` is set on Render** (it currently isn't).
+  **Read it at `GET /admin/stats?key=ADMIN_KEY`** — a rendered page (funnel,
+  cards, and a banded verdict on the failure rate), or `&format=json` for curl.
+  Same gate as `/admin/reports`. `ADMIN_KEY` **is set on Render** (2026-08-09).
   Without that key you still get an **hourly `STATS {...}` rollup in the Render
   logs**, which is also the only history: the counters live in memory and reset on
   every deploy.
