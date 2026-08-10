@@ -94,6 +94,34 @@ people together with a friend — or with a stranger you both chose to keep, via
   cancellation enabled). Failures now name themselves (PR #26): 401 expired
   session, 404 no subscription, 503 not set up, else Stripe's own error code.
 - **Support tip button:** hidden unless `SUPPORT_URL` (a constant in index.html) is set.
+- **Analytics (2026-08-09):** first-party, aggregate-only counters — no cookies, no
+  third party, no per-visitor records, so **no consent banner** and the privacy
+  policy stays short. Most of it the server already knew (matches, skips, reports);
+  the client reports only what happens in the browser (`gate`, `mediaOk`,
+  `mediaFail`, `playBlocked`) via a `stat` message on the existing socket, against
+  a fixed whitelist.
+  **Read it at `GET /admin/stats?key=ADMIN_KEY`** — same gate as `/admin/reports`,
+  and **403 until `ADMIN_KEY` is set on Render** (it currently isn't).
+  Without that key you still get an **hourly `STATS {...}` rollup in the Render
+  logs**, which is also the only history: the counters live in memory and reset on
+  every deploy.
+  Derived rates matter more than the raw counts: `mediaFailRate` is **the
+  relay-failure rate — the evidence for or against needing TURN**. Also
+  `startRate` (visited → pressed Start), `matchRate` (approximate; over-reports
+  once Party Mode is in use, since a session can hold 3–4 people) and `teamUpRate`.
+  **`people` / `returning`** count **unique browsers**, via a random id the
+  client keeps in `localStorage` (`olumie_vid`) and POSTs to `/visit` on page
+  load. POST, not a query string, so the id never lands in an access log or a
+  Referer. It's a beacon rather than a socket message **on purpose** — the
+  socket only opens when someone presses Start, so a socket-based count would
+  miss everyone who bounced. No localStorage (private mode) ⇒ not counted; there
+  is deliberately no fingerprinting fallback.
+  ⚠ Read them precisely: `visits` = **page loads** (a reload counts again);
+  `people` = **browsers, not humans** (one person on a phone and a laptop is
+  two, two people sharing a laptop are one); `returning` = repeat visits **since
+  the last deploy**, since `seenVisitors` is in memory. The id set is capped at
+  50k and stops accepting new ids at the cap rather than evicting — eviction
+  would silently re-count evicted browsers as new people.
 
 ## Services (see the in-app services console the user has)
 GitHub · Render · Supabase · Stripe (**LIVE mode, approved**) · Discord (moderation
@@ -134,7 +162,8 @@ Google STUN.
 Set: `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SECRET_KEY`,
 `SUPABASE_JWKS_URL`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`,
 `STRIPE_PAYMENT_LINK`, `REPORT_WEBHOOK_URL`.
-Not set: `ADMIN_KEY` (enables /admin/reports), `TURN_*` (relay).
+Not set: `ADMIN_KEY` (enables **both** /admin/reports and /admin/stats — worth
+setting, it's just a string you choose), `TURN_*` (relay).
 (`SUPPORT_URL` is **not** an env var — it's a constant at the top of
 `index.html`; the server never reads it.)
 The server accepts either the new (`SUPABASE_PUBLISHABLE_KEY`/`SECRET_KEY`) or

@@ -695,6 +695,30 @@ let sb = null, authToken = null, authUser = null, isPremium = false, premiumUrl 
 const peers = new Map();              // peerId -> { pc, tile, video, placeholder, friend, name, stream }
 const party = { active: false, code: null };
 let teamPending = false;              // I offered to stay together, waiting on them
+const pendingStats = [];              // counters recorded before a socket existed
+// A random id kept in this browser so repeat visits aren't counted as new
+// people. It identifies a browser, not a person: it's random, tied to no
+// account and no IP, sent to nobody but us, and clearing site data resets it.
+// If localStorage is unavailable (private mode, storage disabled) we simply
+// don't count — no fallback fingerprinting.
+let visitorId = '';
+try {
+  visitorId = localStorage.getItem('olumie_vid') || '';
+  if (!visitorId) {
+    visitorId = (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2) + Date.now().toString(36));
+    localStorage.setItem('olumie_vid', visitorId);
+  }
+} catch { visitorId = ''; }
+// Tell the server this browser showed up, so repeat visits aren't counted as
+// new people. Fire-and-forget; if it fails, the page is unaffected.
+if (visitorId) {
+  try {
+    fetch('/visit', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ vid: visitorId }), keepalive: true,
+    }).catch(() => {});
+  } catch {}
+}
 let phase = 'idle';                   // 'idle' | 'searching' | 'connected'
 let nsfwModel = null, moderationState = 'off', tripCount = 0, strikes = 0, moderationTimer = null;
 let callStart = 0, callTimer = null, reportLastTimer = null, reportTarget = null;
@@ -1094,6 +1118,7 @@ function playRemote(entry) {
     if (entry.placeholder) entry.placeholder.style.display = 'none';
   }).catch((err) => {
     console.warn('Remote playback blocked:', err);
+    if (!entry.blocked) wsSend({ type: 'stat', name: 'playBlocked' });   // distinguishes autoplay from ICE
     entry.blocked = true;
     if (entry.placeholder) { entry.placeholder.textContent = 'Tap to start video'; entry.placeholder.style.display = 'grid'; }
   });
@@ -1145,7 +1170,10 @@ function addPeer(peerId, initiator, friend) {
   pc.oniceconnectionstatechange = () => {
     const state = pc.iceConnectionState;
     if (state === 'connected' || state === 'completed') {
-      clearTimeout(entry.iceTimer); entry.iceRetried = false; mediaFailures = 0; return;
+      clearTimeout(entry.iceTimer); entry.iceRetried = false; mediaFailures = 0;
+      // Counted once per peer: the denominator for the relay-failure rate.
+      if (!entry.counted) { entry.counted = true; wsSend({ type: 'stat', name: 'mediaOk' }); }
+      return;
     }
     // 'disconnected' is routinely transient and recovers on its own; only a
     // 'failed' state means ICE has actually given up.
@@ -1173,6 +1201,9 @@ function handleMediaFailure(peerId) {
   if (!entry || entry.failed) return;
   entry.failed = true;
   clearTimeout(entry.iceTimer);
+  // The number that decides whether TURN is needed. Sent before the skip below,
+  // which tears the connection down.
+  if (!entry.counted) { entry.counted = true; wsSend({ type: 'stat', name: 'mediaFail' }); }
   if (entry.friend) {
     if (entry.placeholder) { entry.placeholder.textContent = 'Couldn’t connect to your friend.'; entry.placeholder.style.display = 'grid'; }
     return;
@@ -1260,7 +1291,11 @@ async function ensureSocket() {
     ws = new WebSocket(`${proto}://${location.host}`);
     ws.onmessage = onMessage;
     ws.onclose = () => {};
-    ws.onopen = () => { if (authToken) ws.send(JSON.stringify({ type: 'auth', token: authToken })); resolve(); };
+    ws.onopen = () => {
+      if (authToken) ws.send(JSON.stringify({ type: 'auth', token: authToken }));
+      while (pendingStats.length) wsSend({ type: 'stat', name: pendingStats.shift() });
+      resolve();
+    };
   });
 }
 function onMessage(event) {
@@ -1410,6 +1445,9 @@ els.ageAccept.addEventListener('click', () => {
   els.ageGate.classList.remove('show');
   renderIdleInterests();
   startStageCamera();
+  // Sent once the socket exists — the gate is passed long before any
+  // connection, so this rides along with the first thing that opens one.
+  pendingStats.push('gate');
 });
 els.ageLeave.addEventListener('click', () => { window.location.href = 'https://www.google.com'; });
 
