@@ -263,6 +263,20 @@ const server = http.createServer((req, res) => {
     return res.end(JSON.stringify({ count: recentReports.length, reports: recentReports.slice().reverse() }, null, 2));
   }
 
+  // Visitor beacon. POST rather than a query string so the id never lands in a
+  // URL (and therefore never in access logs or a Referer header). Fires on page
+  // load, which is why it lives here and not on the socket — the socket only
+  // opens when someone presses Start, so it would miss everyone who bounced.
+  if (urlPath === '/visit' && req.method === 'POST') {
+    let body = '';
+    req.on('data', (c) => { body += c; if (body.length > 1000) req.destroy(); });
+    req.on('end', () => {
+      try { countVisitor(JSON.parse(body).vid); } catch {}
+      res.writeHead(204); res.end();
+    });
+    return;
+  }
+
   // Aggregate usage counters. Same ADMIN_KEY gate as /admin/reports, and the
   // same "inert until the env var is set" rule as everything else here.
   if (urlPath === '/admin/stats') {
@@ -364,10 +378,26 @@ function normalizePrefs(msg, premium) {
 const STAT_EVENTS = ['gate', 'mediaOk', 'mediaFail', 'playBlocked'];
 const stats = {
   since: new Date().toISOString(),
-  visits: 0, gate: 0, starts: 0, sessions: 0, teamups: 0,
+  visits: 0, people: 0, returning: 0, gate: 0, starts: 0, sessions: 0, teamups: 0,
   skips: 0, stops: 0, mediaOk: 0, mediaFail: 0, playBlocked: 0,
   reports: 0, bans: 0, peakOnline: 0,
 };
+// Unique browsers. The client sends a random id it keeps in localStorage; we
+// hold the ids only to answer "have I seen this one before" and count. They're
+// random strings tied to no account, no IP and no report — nothing here can be
+// turned back into a person, and it's why "people" is really "browsers".
+// Bounded so a flood of made-up ids can't grow this without limit; at the cap
+// the set stops accepting new ids rather than evicting (eviction would silently
+// re-count the evicted ones as new).
+const seenVisitors = new Set();
+const MAX_VISITORS = 50000;
+function countVisitor(id) {
+  if (typeof id !== 'string' || id.length < 8 || id.length > 64) return;
+  if (seenVisitors.has(id)) { stats.returning++; return; }
+  if (seenVisitors.size >= MAX_VISITORS) return;
+  seenVisitors.add(id);
+  stats.people++;
+}
 function bump(name, by) { if (Object.prototype.hasOwnProperty.call(stats, name)) stats[name] += (by || 1); }
 // Percentages are the point — raw counters make you do arithmetic to answer
 // "is this bad?", and nobody does it.
@@ -377,7 +407,9 @@ function statsSummary() {
   return {
     ...stats,
     online: wss ? wss.clients.size : 0,
-    startRate: pct(stats.starts, stats.visits),        // visited → pressed Start
+    // Against people, not page loads — reloads would flatter this otherwise.
+    startRate: pct(stats.starts, stats.people),        // people → pressed Start
+    returnRate: pct(stats.returning, stats.people + stats.returning),
     // Approximate: assumes both sides were solo, so it over-reports slightly
     // once Party Mode is in use (a session can hold 3–4 people, not 2).
     matchRate: pct(stats.sessions * 2, stats.starts),  // Start → actually matched

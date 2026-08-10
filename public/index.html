@@ -696,6 +696,29 @@ const peers = new Map();              // peerId -> { pc, tile, video, placeholde
 const party = { active: false, code: null };
 let teamPending = false;              // I offered to stay together, waiting on them
 const pendingStats = [];              // counters recorded before a socket existed
+// A random id kept in this browser so repeat visits aren't counted as new
+// people. It identifies a browser, not a person: it's random, tied to no
+// account and no IP, sent to nobody but us, and clearing site data resets it.
+// If localStorage is unavailable (private mode, storage disabled) we simply
+// don't count — no fallback fingerprinting.
+let visitorId = '';
+try {
+  visitorId = localStorage.getItem('olumie_vid') || '';
+  if (!visitorId) {
+    visitorId = (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2) + Date.now().toString(36));
+    localStorage.setItem('olumie_vid', visitorId);
+  }
+} catch { visitorId = ''; }
+// Tell the server this browser showed up, so repeat visits aren't counted as
+// new people. Fire-and-forget; if it fails, the page is unaffected.
+if (visitorId) {
+  try {
+    fetch('/visit', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ vid: visitorId }), keepalive: true,
+    }).catch(() => {});
+  } catch {}
+}
 let phase = 'idle';                   // 'idle' | 'searching' | 'connected'
 let nsfwModel = null, moderationState = 'off', tripCount = 0, strikes = 0, moderationTimer = null;
 let callStart = 0, callTimer = null, reportLastTimer = null, reportTarget = null;

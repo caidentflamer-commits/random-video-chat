@@ -109,8 +109,19 @@ people together with a friend — or with a stranger you both chose to keep, via
   relay-failure rate — the evidence for or against needing TURN**. Also
   `startRate` (visited → pressed Start), `matchRate` (approximate; over-reports
   once Party Mode is in use, since a session can hold 3–4 people) and `teamUpRate`.
-  ⚠ `visits` counts **page loads, not people** — a reload counts again, and
-  distinguishing them is deliberately impossible here.
+  **`people` / `returning`** count **unique browsers**, via a random id the
+  client keeps in `localStorage` (`olumie_vid`) and POSTs to `/visit` on page
+  load. POST, not a query string, so the id never lands in an access log or a
+  Referer. It's a beacon rather than a socket message **on purpose** — the
+  socket only opens when someone presses Start, so a socket-based count would
+  miss everyone who bounced. No localStorage (private mode) ⇒ not counted; there
+  is deliberately no fingerprinting fallback.
+  ⚠ Read them precisely: `visits` = **page loads** (a reload counts again);
+  `people` = **browsers, not humans** (one person on a phone and a laptop is
+  two, two people sharing a laptop are one); `returning` = repeat visits **since
+  the last deploy**, since `seenVisitors` is in memory. The id set is capped at
+  50k and stops accepting new ids at the cap rather than evicting — eviction
+  would silently re-count evicted browsers as new people.
 
 ## Services (see the in-app services console the user has)
 GitHub · Render · Supabase · Stripe (**LIVE mode, approved**) · Discord (moderation
