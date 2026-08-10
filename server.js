@@ -38,10 +38,67 @@ const RETURN_HOSTS = new Set(['olumie.chat', 'www.olumie.chat', 'random-video-ch
 // Direct P2P (STUN) works for most 1-on-1s; a TURN relay is needed when a peer
 // sits behind a strict/symmetric NAT (common on mobile data & some Wi-Fi) and
 // matters more for 3–4-person mesh rooms. Configure via Render env vars — see
-// TURN.md. Two supported schemes:
+// TURN.md. Three supported schemes:
+//   • Cloudflare Realtime: TURN_KEY_ID + TURN_KEY_API_TOKEN (minted, see below)
 //   • HMAC (coturn `use-auth-secret` / TURN REST): TURN_URLS + TURN_SECRET
 //   • Static credentials (some managed providers): TURN_URLS + TURN_USERNAME + TURN_CREDENTIAL
 // With nothing set, we fall back to STUN-only (today's behavior).
+
+// Cloudflare issues SHORT-LIVED credentials from an API rather than a fixed
+// username/password, so there is nothing static to paste into env vars —
+// pasting a snapshot would work until it expired and then fail silently, which
+// looks exactly like the NAT problem TURN is meant to solve.
+//
+// Minted server-side and cached, not fetched per request: the client already
+// refetches /ice before every session, so a per-request call would put a
+// Cloudflare round trip in front of every Start for no benefit. Re-minted at
+// half the TTL so a session never begins with a credential about to expire.
+const CF_TURN_API = 'https://rtc.live.cloudflare.com/v1/turn/keys';
+const TURN_TTL = Math.max(600, parseInt(process.env.TURN_TTL || '86400', 10));
+let cfTurn = { servers: null, expires: 0, inflight: null };
+async function cloudflareTurn() {
+  const id = process.env.TURN_KEY_ID, token = process.env.TURN_KEY_API_TOKEN;
+  if (!id || !token || typeof fetch !== 'function') return null;
+  if (cfTurn.servers && Date.now() < cfTurn.expires) return cfTurn.servers;
+  if (cfTurn.inflight) return cfTurn.inflight;      // one flight at a time, not one per caller
+  cfTurn.inflight = (async () => {
+    try {
+      const r = await fetch(`${CF_TURN_API}/${encodeURIComponent(id)}/credentials/generate-ice-servers`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ttl: TURN_TTL }),
+      });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const j = await r.json();
+      // Their payload has been documented both as an object and as an array;
+      // accept either rather than depending on which one you get.
+      const list = Array.isArray(j.iceServers) ? j.iceServers : (j.iceServers ? [j.iceServers] : []);
+      if (!list.length) throw new Error('no iceServers in response');
+      cfTurn.servers = list;
+      cfTurn.expires = Date.now() + (TURN_TTL / 2) * 1000;
+      console.log(`TURN: Cloudflare credentials minted (ttl ${TURN_TTL}s)`);
+      return list;
+    } catch (e) {
+      // Never fail /ice over this — STUN still works for most pairs, and a
+      // relay that can't be reached is strictly worse than not offering one.
+      // The failure is deliberately NOT cached: expires stays 0 so the next
+      // /ice tries again. A blip shouldn't disable the relay for a whole TTL,
+      // and the cost of a persistent misconfiguration is one failed request
+      // per /ice (measured ~40ms), not a broken call.
+      console.warn('TURN: Cloudflare credential fetch failed —', e.message);
+      cfTurn.servers = null; cfTurn.expires = 0;
+      return null;
+    } finally { cfTurn.inflight = null; }
+  })();
+  return cfTurn.inflight;
+}
+// Async wrapper: same result as buildIceServers(), plus Cloudflare when configured.
+async function buildIceServersAsync() {
+  const servers = buildIceServers();
+  const cf = await cloudflareTurn();
+  if (cf) servers.push(...cf);
+  return servers;
+}
 function buildIceServers() {
   const servers = [{ urls: 'stun:stun.l.google.com:19302' }];
   const urls = (process.env.TURN_URLS || '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -240,8 +297,12 @@ const server = http.createServer((req, res) => {
 
   // ICE/TURN config for the client (fresh HMAC credentials each request).
   if (urlPath === '/ice') {
-    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-    return res.end(JSON.stringify({ iceServers: buildIceServers() }));
+    // Promise chain rather than an async handler, so the rest of the routing
+    // above stays synchronous and untouched.
+    return buildIceServersAsync().then((iceServers) => {
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ iceServers }));
+    });
   }
 
   // Public client config (Supabase URL + anon key). Empty until env is set.
@@ -945,6 +1006,9 @@ wss.on('connection', (socket, req) => {
 });
 
 server.listen(PORT, () => {
+  // Mint before anyone asks, so the first Start of the day doesn't wait on
+  // Cloudflare. No-op unless the key env vars are set.
+  cloudflareTurn();
   console.log(`\n  Olumie is running!`);
   console.log(`  Open this in your browser:  http://localhost:${PORT}\n`);
   console.log(`  Tip: open it in TWO tabs (or two windows) to match with yourself.\n`);

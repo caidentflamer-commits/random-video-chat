@@ -163,8 +163,9 @@ Google STUN.
 Set: `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SECRET_KEY`,
 `SUPABASE_JWKS_URL`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`,
 `STRIPE_PAYMENT_LINK`, `REPORT_WEBHOOK_URL`.
-Not set: `ADMIN_KEY` (enables **both** /admin/reports and /admin/stats — worth
-setting, it's just a string you choose), `TURN_*` (relay).
+Not set: `TURN_KEY_ID` + `TURN_KEY_API_TOKEN` (Cloudflare relay — the only two
+values needed; the server mints the short-lived credentials itself, see
+`TURN.md`). `ADMIN_KEY` **is** set (2026-08-09).
 (`SUPPORT_URL` is **not** an env var — it's a constant at the top of
 `index.html`; the server never reads it.)
 The server accepts either the new (`SUPABASE_PUBLISHABLE_KEY`/`SECRET_KEY`) or
@@ -281,12 +282,18 @@ the domain is live, Google sign-in is published, and the premium loop has been
 proven with an actual charge. What's left is cleanup and a judgement call about
 whether to promote it.
 
-1. **TURN — the remaining pre-promotion item.** Cloudflare Realtime TURN, free
-   to 1,000 GB/mo: set `TURN_URLS` / `TURN_USERNAME` / `TURN_CREDENTIAL` on
-   Render (Environment tab). `/ice` returns STUN-only until then. Include a
-   `turns:` entry on 443 — on a locked-down work network that's often the only
-   one that gets through. Why before any traffic: a relay failure burns *both*
-   users in a match, and nobody reports it, they just leave. See `TURN.md`.
+1. **TURN — the remaining pre-promotion item, and now a two-value paste.**
+   The Cloudflare integration is **built and deployed** (2026-08-09): create a
+   TURN key in Cloudflare → Realtime → TURN, then set `TURN_KEY_ID` and
+   `TURN_KEY_API_TOKEN` on Render. Nothing else — the server mints the
+   short-lived credentials itself and Cloudflare supplies its own endpoints,
+   including TLS on 443 (the one that gets through corporate Wi-Fi).
+   `/ice` returns STUN-only until those are set; confirm it worked by checking
+   `/ice` shows a `turn:` entry, then that `mediaFailRate` on `/admin/stats`
+   drops. Why before any traffic: a relay failure burns *both* users in a
+   match, and nobody reports it, they just leave. See `TURN.md`.
+   ⚠ Check the price on the key-creation screen — free alongside their SFU,
+   $0.05/GB otherwise, and which applies standalone wasn't clear from the docs.
 2. **Small tail, none blocking:** in Search Console, submit `sitemap.xml` and
    **Request Indexing** on the homepage (the property is verified; these are what
    shorten the first crawl from weeks to days) · point Stripe's **business URL** at
