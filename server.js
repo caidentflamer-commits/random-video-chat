@@ -147,6 +147,19 @@ async function handleStripeEvent(event) {
     // Without a customer id the cancel path below can never find this row again.
     if (!s.customer) console.warn(`stripe: no customer on session for ${userId} — cancel will not be able to match them`);
     console.log(`Premium ON: ${userId} (customer ${s.customer || 'none'})`);
+    // A conversion a creator gets paid for. The durable record is the profiles
+    // row itself (referred_by + is_premium); this is the visible ping so a
+    // payable event isn't something you discover by running a query later.
+    try {
+      const { data: prof } = await supa.from('profiles').select('referred_by').eq('id', userId).maybeSingle();
+      if (prof && prof.referred_by) {
+        console.log(`REFERRAL conversion: ${prof.referred_by} → ${userId}`);
+        const hook = process.env.REPORT_WEBHOOK_URL;
+        if (hook && typeof fetch === 'function') {
+          try { fetch(hook, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: `💸 Referral conversion: **${prof.referred_by}** brought a Premium subscriber` }) }).catch(() => {}); } catch {}
+        }
+      }
+    } catch {}
   } else if (event.type === 'customer.subscription.deleted' ||
     (event.type === 'customer.subscription.updated' && ['canceled', 'unpaid', 'incomplete_expired'].includes(event.data.object.status))) {
     const customer = event.data.object.customer;
@@ -183,7 +196,7 @@ async function dbInsertReport(rec) {
 // Verify a Supabase session token (from a signed-in browser) and attach the
 // user to the socket. Anonymous users simply never send this. Best-effort:
 // any failure just leaves the socket anonymous.
-async function handleAuth(socket, token) {
+async function handleAuth(socket, token, ref) {
   if (!supa) return;
   // A null/empty token means "signed out" — drop the account from this socket so
   // premium gating stops right away instead of lingering until they reconnect.
@@ -202,6 +215,7 @@ async function handleAuth(socket, token) {
     // but a user who signed up before the trigger existed has none — and then
     // both the premium read below and the Stripe webhook silently see nothing.
     try { await supa.from('profiles').upsert({ id: socket.userId }, { onConflict: 'id', ignoreDuplicates: true }); } catch (e) { console.warn('profile ensure:', e.message); }
+    stampReferral(socket.userId, ref);   // credit the creator whose link brought them (set once)
     let premium = false;
     try {
       const { data: prof } = await supa.from('profiles').select('is_premium').eq('id', socket.userId).maybeSingle();
@@ -300,7 +314,12 @@ const server = http.createServer((req, res) => {
   // but it catches the honest majority. No UA at all also isn't a browser.
   if (urlPath === '/index.html') {
     const ua = String(req.headers['user-agent'] || '');
-    if (ua && !BOT_RE.test(ua)) bump('visits');
+    if (ua && !BOT_RE.test(ua)) {
+      bump('visits');
+      // Creator link click (?r=name). Same bot filter as visits — a creator's
+      // link pasted in a stream chat gets preview-fetched by every platform.
+      countRefClick(new URLSearchParams((req.url.split('?')[1] || '')).get('r'));
+    }
   }
 
   // ICE/TURN config for the client (fresh HMAC credentials each request).
@@ -351,15 +370,24 @@ const server = http.createServer((req, res) => {
   if (urlPath === '/admin/stats') {
     const q = new URLSearchParams((req.url.split('?')[1] || ''));
     if (!process.env.ADMIN_KEY || q.get('key') !== process.env.ADMIN_KEY) { res.writeHead(403); return res.end('Forbidden'); }
-    const summary = statsSummary();
-    // HTML by default (this gets opened in a browser); JSON on request so curl
-    // and anything scripted keeps working exactly as before.
-    if (q.get('format') === 'json') {
-      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-      return res.end(JSON.stringify(summary, null, 2));
-    }
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
-    return res.end(statsPage(summary));
+    // Referral payouts come from Supabase (durable — money), the rest from the
+    // in-memory counters; the page shows both side by side.
+    return referralPayouts().then((payouts) => {
+      const summary = statsSummary();
+      summary.referrals = {};
+      const refs = new Set([...refClicks.keys(), ...Object.keys(payouts || {})]);
+      refs.forEach((r) => {
+        summary.referrals[r] = { clicks: refClicks.get(r) || 0, ...(payouts && payouts[r] ? payouts[r] : { accounts: null, paying: null }) };
+      });
+      // HTML by default (this gets opened in a browser); JSON on request so
+      // curl and anything scripted keeps working exactly as before.
+      if (q.get('format') === 'json') {
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        return res.end(JSON.stringify(summary, null, 2));
+      }
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+      return res.end(statsPage(summary));
+    });
   }
 
   const filePath = path.join(PUBLIC_DIR, path.normalize(urlPath));
@@ -454,6 +482,63 @@ function normalizePrefs(msg, premium) {
 // Self-identifying non-humans: search crawlers, link-preview fetchers (a link
 // pasted in Discord/WhatsApp fetches the page), uptime monitors, CLI tools.
 const BOT_RE = /bot|crawl|spider|slurp|preview|monitor|pingdom|uptime|curl|wget|python-requests|headless|lighthouse|facebookexternalhit|whatsapp|telegram|discord|embedly|vkshare/i;
+
+// ---- creator referrals ----------------------------------------------------
+// Creators promote with olumie.chat/?r=name. Two halves, deliberately split:
+//   • Clicks per creator — in-memory like the other counters (resets on
+//     deploy; the hourly STATS line is the history). Vanity numbers.
+//   • Paying subscribers per creator — DURABLE, because money rides on it.
+//     The ref is stamped onto profiles.referred_by at sign-in (set once,
+//     never overwritten: the creator who brought the account keeps the
+//     credit) and payouts are read straight from Supabase — a deploy can't
+//     erase who is owed what.
+// Inert without Supabase + a `referred_by` column (SQL in HANDOFF), like
+// everything else here.
+const REF_RE = /^[a-z0-9_-]{2,32}$/i;
+const refClicks = new Map();
+const MAX_REFS = 200;   // a flood of made-up refs shouldn't grow this forever
+function countRefClick(ref) {
+  if (typeof ref !== 'string' || !REF_RE.test(ref)) return;
+  const key = ref.toLowerCase();
+  if (!refClicks.has(key) && refClicks.size >= MAX_REFS) return;
+  refClicks.set(key, (refClicks.get(key) || 0) + 1);
+}
+let refColumnMissing = false;   // warn once, not per sign-in
+async function stampReferral(userId, ref) {
+  if (!supa || refColumnMissing || typeof ref !== 'string' || !REF_RE.test(ref)) return;
+  try {
+    // Conditional update, not upsert: only fills an empty referred_by, so an
+    // account's original creator can't be overwritten by a later click.
+    const { error } = await supa.from('profiles')
+      .update({ referred_by: ref.toLowerCase() })
+      .eq('id', userId).is('referred_by', null);
+    if (error) throw error;
+  } catch (e) {
+    if (/referred_by/.test(e.message || '')) {
+      if (!refColumnMissing) console.warn('referrals: profiles.referred_by column missing — run the SQL in HANDOFF.md to enable');
+      refColumnMissing = true;
+    } else console.warn('referrals: stamp failed:', e.message);
+  }
+}
+// Paying subscribers per creator, straight from the durable record.
+async function referralPayouts() {
+  if (!supa || refColumnMissing) return null;
+  try {
+    const { data, error } = await supa.from('profiles')
+      .select('referred_by, is_premium').not('referred_by', 'is', null);
+    if (error) throw error;
+    const out = {};
+    (data || []).forEach((r) => {
+      const o = out[r.referred_by] || (out[r.referred_by] = { accounts: 0, paying: 0 });
+      o.accounts++; if (r.is_premium) o.paying++;
+    });
+    return out;
+  } catch (e) {
+    if (/referred_by/.test(e.message || '')) refColumnMissing = true;
+    else console.warn('referrals: payout read failed:', e.message);
+    return null;
+  }
+}
 const STAT_EVENTS = ['gate', 'mediaOk', 'mediaFail', 'playBlocked'];
 const stats = {
   since: new Date().toISOString(),
@@ -609,6 +694,26 @@ function statsPage(s) {
   <div class="line">${verdict.line}</div>
   <div class="meta">${n(s.mediaFail)} failed of ${n(mediaTotal)} attempts · ${n(s.playBlocked)} blocked by autoplay (not a network fault)</div>
 </div>
+${Object.keys(s.referrals || {}).length ? `
+<h2>Creators</h2>
+<div class="panel">
+  <table style="width:100%;border-collapse:collapse;font-size:var(--fs-sm)">
+    <tr style="color:var(--text-muted);text-align:left">
+      <th style="padding:6px 0;font-weight:500">creator</th>
+      <th style="font-weight:500">clicks*</th>
+      <th style="font-weight:500">accounts</th>
+      <th style="font-weight:500">paying now</th>
+    </tr>
+    ${Object.entries(s.referrals).sort((a, b) => (b[1].paying || 0) - (a[1].paying || 0)).map(([r, v]) => `
+    <tr style="border-top:1px solid var(--border)">
+      <td style="padding:8px 0;font-family:var(--font-mono)">${r}</td>
+      <td style="font-variant-numeric:tabular-nums">${n(v.clicks)}</td>
+      <td style="font-variant-numeric:tabular-nums">${n(v.accounts)}</td>
+      <td style="font-variant-numeric:tabular-nums;font-weight:600">${n(v.paying)}</td>
+    </tr>`).join('')}
+  </table>
+  <div class="step-note" style="margin-top:10px">*clicks reset on deploy; accounts and paying-now are durable (Supabase) — payouts read from those. Link format: olumie.chat/?r=name</div>
+</div>` : ''}
 
 <footer>
   <p><strong>Read these carefully.</strong> “Page loads” counts reloads again.
@@ -931,7 +1036,7 @@ wss.on('connection', (socket, req) => {
 
       // ---- Account ----
       case 'auth':
-        handleAuth(socket, msg.token);
+        handleAuth(socket, msg.token, msg.ref);
         break;
 
       // ---- Enter matchmaking ----
