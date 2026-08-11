@@ -26,6 +26,15 @@ the trail to do that.
   resets on restart) and disconnects them. "Report last" covers someone you just
   skipped, for a short grace window.
 
+## If a report involves a minor
+
+Reference for the moment it's needed, not a task. In the US, a service that
+becomes aware of apparent CSAM is **legally required to report it to NCMEC**
+(CyberTipline: report.cybertip.org — 18 U.S.C. § 2258A). Preserve the report
+record (it's already durable in Supabase); don't delete it. Ban the account/IP
+as usual. This is the one category of report where "handle it later" has legal
+consequences.
+
 ## Where reports go (three layers)
 
 Every report — manual or auto — is recorded via `logReport()`:
