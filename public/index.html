@@ -783,6 +783,22 @@ try {
     localStorage.setItem('olumie_vid', visitorId);
   }
 } catch { visitorId = ''; }
+// Creator referral (?r=name). Remembered so the credit survives the round trip
+// through sign-in — you click a creator's link today and subscribe next week,
+// the creator still gets it. Last click wins until an account exists; once
+// stamped onto the account server-side it never changes. The param is stripped
+// from the URL (hash preserved — party invites and Supabase both ride there).
+let refCode = '';
+try {
+  const r = new URLSearchParams(location.search).get('r');
+  if (r && /^[a-z0-9_-]{2,32}$/i.test(r)) {
+    refCode = r.toLowerCase();
+    localStorage.setItem('olumie_ref', refCode);
+    history.replaceState(null, '', location.pathname + location.hash);
+  } else {
+    refCode = localStorage.getItem('olumie_ref') || '';
+  }
+} catch {}
 // Tell the server this browser showed up, so repeat visits aren't counted as
 // new people. Fire-and-forget; if it fails, the page is unaffected.
 if (visitorId) {
@@ -1011,7 +1027,7 @@ async function refreshPremium() {
       if (!els.filtersModal.classList.contains('is-hidden')) renderFilterOptions();
     }
   } catch {}
-  wsSend({ type: 'auth', token: authToken });   // keep the server's copy in sync (it's the enforcer)
+  wsSend({ type: 'auth', token: authToken, ref: refCode });   // keep the server's copy in sync (it's the enforcer)
 }
 // After returning from checkout (or the Stripe portal), re-check premium status.
 document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshPremium(); });
@@ -1426,7 +1442,7 @@ async function ensureSocket() {
     ws.onmessage = onMessage;
     ws.onclose = () => {};
     ws.onopen = () => {
-      if (authToken) ws.send(JSON.stringify({ type: 'auth', token: authToken }));
+      if (authToken) ws.send(JSON.stringify({ type: 'auth', token: authToken, ref: refCode }));
       while (pendingStats.length) wsSend({ type: 'stat', name: pendingStats.shift() });
       resolve();
     };
@@ -1665,7 +1681,7 @@ function applySession(session) {
   authUser = (session && session.user) || null;
   els.authBtn.textContent = authUser ? (authUser.email ? authUser.email.split('@')[0] : 'Account') : 'Sign in';
   els.authBtn.title = authUser ? 'Signed in. Click to sign out' : 'Sign in';
-  if (authToken) { wsSend({ type: 'auth', token: authToken }); refreshPremium(); }
+  if (authToken) { wsSend({ type: 'auth', token: authToken, ref: refCode }); refreshPremium(); }
   else { isPremium = false; renderIdleInterests(); }   // signed out → relock the gender filter
 }
 // Don't autofocus the email field when Google is on offer — on mobile that
