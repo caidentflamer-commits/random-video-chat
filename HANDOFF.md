@@ -306,20 +306,14 @@ the domain is live, Google sign-in is published, and the premium loop has been
 proven with an actual charge. What's left is cleanup and a judgement call about
 whether to promote it.
 
-1. **TURN — the remaining pre-promotion item, and now a two-value paste.**
-   The Cloudflare integration is **built and deployed** (2026-08-09): create a
-   TURN key in Cloudflare → Realtime → TURN, then set `TURN_KEY_ID` and
-   `TURN_KEY_API_TOKEN` on Render. Nothing else — the server mints the
-   short-lived credentials itself and Cloudflare supplies its own endpoints,
-   including TLS on 443 (the one that gets through corporate Wi-Fi).
-   `/ice` returns STUN-only until those are set; confirm it worked by checking
-   `/ice` shows a `turn:` entry, then that `mediaFailRate` on `/admin/stats`
-   drops. Why before any traffic: a relay failure burns *both* users in a
-   match, and nobody reports it, they just leave. See `TURN.md`.
-   **Cost (checked 2026-08-09): 1,000 GB/mo free, then $0.05/GB, egress only.**
-   The free tier does apply to standalone TURN. ≈0.9 GB per hour of relayed
-   1-on-1, so ≈1,100 relayed hours/month free — comfortably free at this scale.
-   ⚠ Party Mode is a mesh, so relayed party calls burn it several times faster.
+1. ✅ **TURN — LIVE (2026-08-10).** Keys set on Render; verified: `/ice` serves
+   Cloudflare TURN with 64-char minted credentials, endpoints include TLS on
+   443, credentials cached (identical across calls). The remaining question is
+   whether it fixed the 2026-08-08 work↔home incident — the original failing
+   pair hasn't been retested. `mediaFailRate` on `/admin/stats` is the ongoing
+   answer. Cost: 1,000 GB/mo free then $0.05/GB egress; ≈1,100 relayed
+   1-on-1 hours/month free. ⚠ Relayed *party* calls burn it several times
+   faster (mesh).
 2. **Small tail, none blocking:** in Search Console, submit `sitemap.xml` and
    **Request Indexing** on the homepage (the property is verified; these are what
    shorten the first crawl from weeks to days) · point Stripe's **business URL** at
@@ -330,12 +324,7 @@ whether to promote it.
    years of history. It will rank for "olumie", which nobody searches yet. Growth
    for this category comes from TikTok/Reddit/Discord, where Party Mode is the
    actually-shareable idea. Treat search as a slow compound, not a launch channel.
-3. **Before promoting anywhere — moderation is now an ongoing commitment.** The
-   automated stack is a filter, not a backstop; the Discord report feed needs a
-   human, and that human is Caiden. In this category that includes the possibility
-   of illegal content involving minors, which carries real legal reporting
-   obligations. Decide how a 2am report gets handled *before* it happens.
-4. **Optional, ~$35/mo — the auth-domain polish.** Google's account picker
+3. **Optional, ~$35/mo — the auth-domain polish.** Google's account picker
    shows the redirect target's domain, so today it reads *"to continue to
    yyterkkuqceodisnhehu.supabase.co"* — a random ref that looks like phishing to a
    consumer. A Supabase custom domain moves auth to e.g. `auth.olumie.chat` and the
@@ -345,12 +334,12 @@ whether to promote it.
    redirect URI must change at the same moment as the domain or sign-in breaks, so
    these are one coordinated change, not two. Deferred deliberately: worth
    revisiting once there's evidence real users drop off at sign-in, not before.
-5. **Deferred:** ad-free (needs an ad system + a category-friendly ad network —
+4. **Deferred:** ad-free (needs an ad system + a category-friendly ad network —
    mainstream networks reject this category, like payment processors), priority
    matching, more Premium perks. **TURN is no longer in this list** — the
    2026-08-08 matched-but-no-media incident (cause still open, NAT is the
    leading hypothesis) promoted it to item 1.
-6. **Declined — don't re-pitch:** a persistent **friends system** (add friend
+5. **Declined — don't re-pitch:** a persistent **friends system** (add friend
    after a team-up, see when they're online, invite to a party) was proposed
    2026-08-10 as the main retention lever and **Caiden said no**. An iOS
    add-to-home-screen instructional hint was also declined (the Android
