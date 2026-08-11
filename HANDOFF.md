@@ -350,6 +350,12 @@ whether to promote it.
    matching, more Premium perks. **TURN is no longer in this list** — the
    2026-08-08 matched-but-no-media incident (cause still open, NAT is the
    leading hypothesis) promoted it to item 1.
+6. **Declined — don't re-pitch:** a persistent **friends system** (add friend
+   after a team-up, see when they're online, invite to a party) was proposed
+   2026-08-10 as the main retention lever and **Caiden said no**. An iOS
+   add-to-home-screen instructional hint was also declined (the Android
+   install chip stays). Retention rests on the shipped pieces: Stay Together,
+   invite links, the home-screen icon, and concentrating launch traffic.
 
 ## Working conventions used this far
 - Change on a branch → PR → merge to `main` → Render deploys. (A few tiny fixes
