@@ -32,7 +32,14 @@ people together with a friend — or with a stranger you both chose to keep, via
 - **Video chat:** WebRTC 1-on-1 **and Party Mode** — rooms + full mesh (≤4), STUN-only.
   Create/join a party by 4-char code, "Find people" together, Next keeps friends
   together (server room model; peer-addressed signaling; re-match cooldown).
-- **Creator referrals (2026-08-10):** creators promote with **`olumie.chat/?r=name`**.
+- **Creator referrals — BUILT BUT ON HOLD (2026-08-10):** Caiden's actual plan is
+  **flat-fee sponsored streams** — pay creators to go live on the site, no links,
+  no attribution, no rev share. That needs nothing from the code; measurement is
+  the `/admin/stats` numbers during the stream window (visits, peakOnline,
+  sessions), with the hourly `STATS` log line as history. **Don't push the SQL
+  or the payout model** — the machinery below stays dormant (it's inert without
+  the column) and only matters if he later wants links after all.
+  What was built: creators promote with **`olumie.chat/?r=name`**.
   Two halves, deliberately split: **clicks** per creator are in-memory (reset on
   deploy, vanity); **accounts and paying subscribers** per creator are **durable**
   — the ref is stamped onto `profiles.referred_by` at sign-in, set once, never
