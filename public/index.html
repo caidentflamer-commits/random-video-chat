@@ -11,7 +11,7 @@
 <meta name="google-site-verification" content="Svey5jK-1rZb9ZG1HTn-lkXDKsPp_rWmDDZVFQfax7k" />
 <meta name="google-site-verification" content="2i3BUiRPYOWa7xIKIR5Mkzz52ml8-g_knwfhco6Va64" />
 <title>Olumie | Free Random Video Chat</title>
-<meta name="description" content="Free random video chat. Meet people one-on-one on live video, or team up with a friend in Party Mode. Moderated, 18+, no signup." />
+<meta name="description" content="Free random video chat. Meet people one-on-one on live video, or team up with a friend in a private room. Moderated, 18+, no signup." />
 <meta name="theme-color" content="#0d1117" />
 <!-- Icons + manifest. iOS ignores manifest icons and reads apple-touch-icon;
      the maskable entry is for Android launchers that apply their own shape. -->
@@ -23,11 +23,11 @@
 <link rel="canonical" href="https://olumie.chat/" />
 <meta property="og:type" content="website" />
 <meta property="og:title" content="Olumie | Free Random Video Chat" />
-<meta property="og:description" content="Meet new people on live video, solo or with a friend in Party Mode. Moderated, 18+, no signup." />
+<meta property="og:description" content="Meet new people on live video, solo or with a friend in a private room. Moderated, 18+, no signup." />
 <meta property="og:url" content="https://olumie.chat/" />
 <meta name="twitter:card" content="summary" />
 <meta name="twitter:title" content="Olumie | Free Random Video Chat" />
-<meta name="twitter:description" content="Meet new people on live video, solo or with a friend in Party Mode. Moderated, 18+, no signup." />
+<meta name="twitter:description" content="Meet new people on live video, solo or with a friend in a private room. Moderated, 18+, no signup." />
 
 <!-- In-browser NSFW detection (free, no API key). tfjs is the ML engine;
      nsfwjs is the model that scores a frame for explicit content.
@@ -416,7 +416,7 @@
 </style>
 </head>
 <body class="c-root c-stage" data-state="idle" data-peers="0">
-<h1 class="sr-only">Olumie: free random video chat with strangers, one-on-one or with a friend in Party Mode</h1>
+<h1 class="sr-only">Olumie: free random video chat with strangers, one-on-one or with a friend in a private room</h1>
 <div class="shell">
 
   <!-- Status bar -->
@@ -458,7 +458,7 @@
           </div>
         </div>
         <div id="partyWaiting" class="is-hidden">
-          <h2 class="c-h2">Party ready</h2>
+          <h2 class="c-h2">Room ready</h2>
           <p class="c-body c-muted" style="font-size:var(--fs-sm)">Share this code with one friend:</p>
           <div class="party-code" id="partyCodeText">----</div>
           <p class="c-help">Waiting for them to join…</p>
@@ -466,7 +466,7 @@
             <!-- The link form of the code: opening it lands them straight in
                  this party instead of typing the code into a modal. -->
             <button class="c-btn c-btn--secondary c-btn--sm" id="sharePartyBtn">Share invite link</button>
-            <button class="c-btn c-btn--ghost c-btn--sm" id="cancelPartyBtn">Cancel party</button>
+            <button class="c-btn c-btn--ghost c-btn--sm" id="cancelPartyBtn">Cancel room</button>
           </div>
         </div>
       </div>
@@ -605,7 +605,7 @@
 <div class="c-modal is-hidden" id="join-modal" role="dialog" aria-modal="true" aria-labelledby="joinTitle">
   <div class="c-modal__backdrop" id="joinBackdrop"></div>
   <div class="c-modal__sheet" style="width:min(400px,100%)">
-    <div><h3 class="c-h3" id="joinTitle" style="font-size:var(--fs-md)">Join a party</h3><p class="c-body c-muted" style="font-size:var(--fs-sm)">Enter the 4-character code your friend shared.</p></div>
+    <div><h3 class="c-h3" id="joinTitle" style="font-size:var(--fs-md)">Join a room</h3><p class="c-body c-muted" style="font-size:var(--fs-sm)">Enter the 4-character code your friend shared.</p></div>
     <input class="c-input" id="joinCodeInput" maxlength="4" placeholder="e.g. K7QX" autocomplete="off" style="text-transform:uppercase;letter-spacing:.25em;font-family:var(--font-mono);text-align:center;font-size:var(--fs-lg)" />
     <div class="c-modal__actions"><button class="c-btn c-btn--ghost" id="joinCancel">Cancel</button><button class="c-btn" id="joinConfirm">Join</button></div>
   </div>
@@ -1454,7 +1454,7 @@ function onMessage(event) {
   switch (msg.type) {
     case 'party-created': party.active = true; party.code = msg.code; els.partyCodeText.textContent = msg.code; phase = 'idle'; render(); break;
     case 'party-joined': party.active = true; phase = 'idle'; render(); break;
-    case 'party-error': toast(msg.reason || 'Could not join that party.'); break;
+    case 'party-error': toast(msg.reason || 'Could not join that room.'); break;
     case 'peer-join': addPeer(msg.peerId, msg.initiator, msg.friend); break;
     case 'peer-leave': {
       const wasFriend = peers.get(msg.peerId)?.friend;
@@ -1490,8 +1490,8 @@ function onMessage(event) {
       }
       party.active = true; party.code = null; teamPending = false;
       phase = 'idle'; stopTimer(); closeTeamPrompt();
-      addChat('You’re a party now — hit “Find people” when you want to meet someone together.', 'sys');
-      toast('You’re a party now.');
+      addChat('You’re in a room now — hit “Find people” when you want to meet someone together.', 'sys');
+      toast('You’re in a room now.');
       render(); break;
     }
     case 'report-ack': toast('Reported. You won’t be matched with them again.'); break;
@@ -1567,7 +1567,7 @@ let inviteCode = null;
 async function consumeInvite() {
   if (!inviteCode) return;
   const code = inviteCode; inviteCode = null;   // one attempt; a dead code shouldn't haunt reloads
-  toast('Joining your friend’s party…');
+  toast('Joining your friend’s room…');
   if (!(await initLocalMedia())) return;        // camera refusal already explains itself on the tile
   await ensureSocket();
   wsSend({ type: 'join-party', code });         // invalid/full → existing party-error toast
