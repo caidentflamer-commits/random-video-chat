@@ -1143,16 +1143,16 @@ els.chatSend.addEventListener('click', sendChat);
 els.chatInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); sendChat(); } });
 
 // --- Local media ----------------------------------------------------------
-// Ask for a frame shaped like the screen it will be shown on. The phone layout
-// is full-bleed portrait, so a 16:9 landscape capture gets `object-fit: cover`d
-// down to roughly its middle quarter — the sides are encoded, transmitted, and
-// then cropped away. Portrait capture means nearly every pixel sent is a pixel
-// seen: sharper *and* cheaper, which also matters now that relayed calls cost
-// Cloudflare bandwidth. Desktop keeps landscape; its tiles are wide.
-// All `ideal`, never `exact`, so a camera that can't oblige still works.
+// Phones: no width/height/aspect constraints — just the front camera. Phone
+// sensors are 4:3, and iOS Safari satisfies portrait dimension requests by
+// center-cropping the feed (a digital zoom) rather than handing over the
+// rotated native frame, which is what made the camera look zoomed in. The
+// full-bleed `object-fit: cover` layout crops the visible picture to the
+// screen's shape no matter what aspect is captured, so dictating a shape
+// here bought nothing visually. Desktop keeps landscape; its tiles are wide.
 function videoConstraints() {
   return isPhone()
-    ? { width: { ideal: 720 }, height: { ideal: 1280 }, aspectRatio: { ideal: 9 / 16 } }
+    ? { facingMode: 'user' }
     : { width: { ideal: 1280 }, height: { ideal: 720 }, aspectRatio: { ideal: 16 / 9 } };
 }
 async function initLocalMedia() {
