@@ -1504,8 +1504,8 @@ function showBanned(unbanToken) {
   if (ws) ws.close();
   if (localStream) localStream.getTracks().forEach((t) => t.stop());
   els.banned.style.display = 'flex';
-  // Paid unban: only offered when the server minted a token for this ban
-  // (it never does for "Under 18") and the Payment Link is configured.
+  // Paid unban: offered when the server minted a token for this ban and the
+  // Payment Link is configured.
   if (unbanToken && unbanUrl) {
     els.unbanBtn.textContent = 'Remove the ban — ' + UNBAN_PRICE;
     // Assigned, not addEventListener: a repeat banned message must not stack

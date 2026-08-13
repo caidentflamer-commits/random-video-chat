@@ -111,9 +111,12 @@ people together with a friend — or with a stranger you both chose to keep, via
   `STRIPE_WEBHOOK_SECRET`, so no token storage, nothing breaks on deploy, and the
   IP never appears in a URL or Stripe's records. The webhook decrypts it, drops
   the IP from `bannedIps` and **expires** (not deletes) the Supabase `bans` rows,
-  so history stays auditable. **"Under 18" bans are never offered for sale** —
-  the server checks the latest ban reason before minting a token. Counted as
-  `unbans` on `/admin/stats`; 💰 ping on the Discord webhook per sale.
+  so history stays auditable. **Every ban is purchasable** (decided 2026-08-12:
+  report reasons are reporter-chosen, so a reason gate is a griefing vector,
+  not a safeguard); the 💰 Discord ping and the `UNBAN paid` log line carry
+  the recorded ban reason, so a purchase worth a second look — e.g. an
+  "Under 18" report — is visible for a manual re-ban. Counted as `unbans` on
+  `/admin/stats`.
   **To turn on:** Stripe (live) → create a one-time Product/price → Payment
   Link → set `STRIPE_UNBAN_LINK` on Render. ⚠ Same price-in-two-places gotcha
   as Premium: `UNBAN_PRICE` in `index.html` vs the real price on the link —
