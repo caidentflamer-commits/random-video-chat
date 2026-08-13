@@ -130,13 +130,77 @@ if (process.env.SUPABASE_URL && SUPABASE_SECRET) {
 // ---- Stripe (Premium subscriptions) --------------------------------------
 // Inert unless STRIPE_SECRET_KEY is set. The webhook flips profiles.is_premium.
 const stripe = process.env.STRIPE_SECRET_KEY ? require('stripe')(process.env.STRIPE_SECRET_KEY) : null;
+
+// ---- Paid unbans ----------------------------------------------------------
+// A banned visitor can pay a one-time fee to lift the ban on their IP.
+// STRIPE_UNBAN_LINK is a *payment-mode* Payment Link; the client opens it with
+// client_reference_id = 'unban_' + AES-GCM(ip), so the webhook can recover
+// which IP paid without the IP riding in a URL or Stripe's records — and
+// without storing tokens anywhere: the key derives from STRIPE_WEBHOOK_SECRET,
+// so tokens survive restarts and deploys. "Under 18" bans are never offered.
+// Inert unless STRIPE_UNBAN_LINK and STRIPE_WEBHOOK_SECRET are both set.
+const UNBAN_URL = process.env.STRIPE_UNBAN_LINK || '';
+const unbanKey = process.env.STRIPE_WEBHOOK_SECRET
+  ? crypto.createHash('sha256').update('unban:' + process.env.STRIPE_WEBHOOK_SECRET).digest()
+  : null;
+function mintUnbanToken(ip) {
+  const iv = crypto.randomBytes(12);
+  const c = crypto.createCipheriv('aes-256-gcm', unbanKey, iv);
+  const ct = Buffer.concat([c.update(String(ip), 'utf8'), c.final()]);
+  return Buffer.concat([iv, c.getAuthTag(), ct]).toString('base64url');
+}
+function readUnbanToken(tok) {
+  if (!unbanKey || typeof tok !== 'string') return null;
+  try {
+    const b = Buffer.from(tok, 'base64url');
+    const d = crypto.createDecipheriv('aes-256-gcm', unbanKey, b.subarray(0, 12));
+    d.setAuthTag(b.subarray(12, 28));
+    return Buffer.concat([d.update(b.subarray(28)), d.final()]).toString('utf8');
+  } catch { return null; }
+}
+// Is this IP's ban for sale? Mint a token if so. The reason lookup is
+// best-effort — a DB hiccup shouldn't strand an honest payer — but an
+// "Under 18" ban is never purchasable, at any price.
+async function unbanOffer(ip) {
+  if (!UNBAN_URL || !unbanKey || !ip) return null;
+  if (supa) {
+    try {
+      const { data } = await supa.from('bans').select('reason').eq('ip', ip)
+        .order('id', { ascending: false }).limit(1);
+      const reason = (data && data[0] && data[0].reason) || '';
+      if (/under\s*18|minor/i.test(reason)) return null;
+    } catch {}
+  }
+  return mintUnbanToken(ip);
+}
 // THROWS on a genuine write failure so the webhook answers 500 and Stripe shows
 // a failed delivery (and retries). A green 200 that silently wrote nothing is
 // the worst possible outcome to debug.
 async function handleStripeEvent(event) {
-  if (!supa) return;
   if (event.type === 'checkout.session.completed') {
     const s = event.data.object;
+    // Paid unban: the reference is an encrypted IP, not a user id. Checked
+    // first — the premium path would try to upsert it as a profile id and
+    // Stripe would retry the resulting 500 forever.
+    if (s.client_reference_id && s.client_reference_id.startsWith('unban_')) {
+      const ip = readUnbanToken(s.client_reference_id.slice('unban_'.length));
+      if (!ip) { console.warn('stripe: unban payment with unreadable token — nobody was unbanned'); return; }
+      bannedIps.delete(ip);
+      if (supa) {
+        // Expire rather than delete: the ban history stays auditable.
+        const { error } = await supa.from('bans')
+          .update({ expires_at: new Date().toISOString() }).eq('ip', ip);
+        if (error) throw new Error(`unban expire failed for ${ip}: ${error.message}`);
+      }
+      bump('unbans');
+      console.log(`UNBAN paid: ${ip}`);
+      const hook = process.env.REPORT_WEBHOOK_URL;
+      if (hook && typeof fetch === 'function') {
+        try { fetch(hook, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: `💰 Paid unban: ${ip}` }) }).catch(() => {}); } catch {}
+      }
+      return;
+    }
+    if (!supa) return;
     const userId = s.client_reference_id;   // = the Supabase user id we appended to the link
     if (!userId) { console.warn('stripe: checkout completed with no client_reference_id — cannot map it to a user'); return; }
     // Upsert, not update: with no profiles row, .update() matches zero rows and
@@ -162,6 +226,7 @@ async function handleStripeEvent(event) {
     } catch {}
   } else if (event.type === 'customer.subscription.deleted' ||
     (event.type === 'customer.subscription.updated' && ['canceled', 'unpaid', 'incomplete_expired'].includes(event.data.object.status))) {
+    if (!supa) return;
     const customer = event.data.object.customer;
     if (!customer) return;
     const { data, error } = await supa.from('profiles')
@@ -340,6 +405,7 @@ const server = http.createServer((req, res) => {
       supabaseAnonKey: process.env.SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY || '',
       supabaseConnected: !!supa,   // server successfully created the admin client (secret key OK)
       premiumUrl: process.env.STRIPE_PAYMENT_LINK || '',   // Premium subscription checkout link
+      unbanUrl: UNBAN_URL,                                 // one-time paid-unban checkout link
     }));
   }
 
@@ -544,7 +610,7 @@ const stats = {
   since: new Date().toISOString(),
   visits: 0, people: 0, returning: 0, gate: 0, starts: 0, sessions: 0, teamups: 0,
   skips: 0, stops: 0, mediaOk: 0, mediaFail: 0, playBlocked: 0,
-  reports: 0, bans: 0, peakOnline: 0,
+  reports: 0, bans: 0, unbans: 0, peakOnline: 0,
 };
 // Unique browsers. The client sends a random id it keeps in localStorage; we
 // hold the ids only to answer "have I seen this one before" and count. They're
@@ -682,7 +748,7 @@ function statsPage(s) {
   <div class="card"><div class="k">Browsers</div><div class="v">${n(s.people)}</div><div class="foot">${n(s.returning)} came back · ${pctText(s.returnRate)}</div></div>
   <div class="card"><div class="k">Conversations</div><div class="v">${n(s.sessions)}</div><div class="foot">${n(s.teamups)} became parties</div></div>
   <div class="card"><div class="k">Peak online</div><div class="v">${n(s.peakOnline)}</div><div class="foot">at once, since last deploy</div></div>
-  <div class="card"><div class="k">Reports</div><div class="v">${n(s.reports)}</div><div class="foot">${n(s.bans)} bans issued</div></div>
+  <div class="card"><div class="k">Reports</div><div class="v">${n(s.reports)}</div><div class="foot">${n(s.bans)} bans issued · ${n(s.unbans)} paid unbans</div></div>
 </div>
 
 <h2>Where people drop off</h2>
@@ -906,8 +972,12 @@ function banSocket(socket) {
   bump('bans');
   bannedIps.add(socket.ip);
   console.log(`Banned IP ${socket.ip} (${socket.peerId})`);
-  send(socket, { type: 'banned' });
-  setTimeout(() => { if (socket.readyState === socket.OPEN) socket.close(); }, 300);
+  // The unban token must ride IN the banned message — the client tears the
+  // socket down as soon as it sees one, so a follow-up would never arrive.
+  unbanOffer(socket.ip).then((tok) => {
+    send(socket, { type: 'banned', unban: tok || undefined });
+    setTimeout(() => { if (socket.readyState === socket.OPEN) socket.close(); }, 300);
+  });
 }
 
 // ---- a socket leaves (disconnect or ban) ----------------------------------
@@ -947,13 +1017,13 @@ wss.on('connection', (socket, req) => {
   socket.lastOpponents = [];
 
   if (bannedIps.has(socket.ip)) {
-    send(socket, { type: 'banned' });
-    return socket.close();
+    unbanOffer(socket.ip).then((tok) => { send(socket, { type: 'banned', unban: tok || undefined }); socket.close(); });
+    return;
   }
   // Durable ban check (survives restarts). Fast in-memory check above covers the
   // common case; this catches bans persisted before this process started.
-  dbIsBanned(socket.ip).then((banned) => {
-    if (banned && socket.readyState === socket.OPEN) { bannedIps.add(socket.ip); send(socket, { type: 'banned' }); socket.close(); }
+  dbIsBanned(socket.ip).then(async (banned) => {
+    if (banned && socket.readyState === socket.OPEN) { bannedIps.add(socket.ip); send(socket, { type: 'banned', unban: (await unbanOffer(socket.ip)) || undefined }); socket.close(); }
   });
   console.log(`Connected ${socket.peerId} (${socket.ip})`);
   if (wss.clients.size > stats.peakOnline) stats.peakOnline = wss.clients.size;
