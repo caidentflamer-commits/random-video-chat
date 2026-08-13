@@ -698,6 +698,8 @@
 <div class="banned-screen" id="banned-screen">
   <h1>You've been banned</h1>
   <p>You were reported for inappropriate behavior and can no longer use this service.</p>
+  <button class="c-btn is-hidden" id="unbanBtn" style="margin-top:18px">Remove the ban</button>
+  <p class="is-hidden" id="unbanNote" style="font-size:var(--fs-sm);margin-top:10px">One-time payment. It lifts this ban only — break the rules again and the next ban sticks, with no refund. After paying, reload this page.</p>
 </div>
 
 <canvas id="sampler" width="224" height="224" style="display:none"></canvas>
@@ -745,7 +747,7 @@ const els = {
   joinModal: $('join-modal'), joinBackdrop: $('joinBackdrop'), joinCodeInput: $('joinCodeInput'), joinCancel: $('joinCancel'), joinConfirm: $('joinConfirm'),
   teamBtn: $('teamBtn'), teamModal: $('team-modal'), teamBackdrop: $('teamBackdrop'), teamNo: $('teamNo'), teamYes: $('teamYes'),
   chatBtn: $('chatBtn'), reportBtn: $('reportBtn'),
-  toast: $('toast'), toastText: $('toastText'), banned: $('banned-screen'), sampler: $('sampler'), settingsBtn: $('settingsBtn'),
+  toast: $('toast'), toastText: $('toastText'), banned: $('banned-screen'), unbanBtn: $('unbanBtn'), unbanNote: $('unbanNote'), sampler: $('sampler'), settingsBtn: $('settingsBtn'),
   ageGate: $('ageGate'), ageAccept: $('ageAccept'), ageLeave: $('ageLeave'), genderChoose: $('genderChoose'),
   authBtn: $('authBtn'), authModal: $('auth-modal'), authBackdrop: $('authBackdrop'), authEmail: $('authEmail'),
   authMsg: $('authMsg'), authCancel: $('authCancel'), authSend: $('authSend'),
@@ -757,6 +759,7 @@ const els = {
 
 let localStream = null, ws = null;
 let sb = null, authToken = null, authUser = null, isPremium = false, premiumUrl = '';   // Supabase account (optional)
+let unbanUrl = '';   // one-time paid-unban Payment Link (empty = feature off)
 const peers = new Map();              // peerId -> { pc, tile, video, placeholder, friend, name, stream }
 const party = { active: false, code: null };
 let teamPending = false;              // I offered to stay together, waiting on them
@@ -989,6 +992,9 @@ function renderFilterOptions() {
 // ⚠ Must match the price on the Stripe Payment Link (STRIPE_PAYMENT_LINK).
 // Nothing enforces that, so changing the price in Stripe means changing it here.
 const PREMIUM_PRICE = '$4.99';
+// ⚠ Same two-places gotcha as PREMIUM_PRICE: the real price lives on the
+// Stripe unban Payment Link. Change it there → change it here, same sitting.
+const UNBAN_PRICE = '$9.99';
 
 // Explain Premium before sending anyone to Stripe. Tapping a locked filter used
 // to open checkout instantly, which is a jarring way to meet a price for the
@@ -1489,15 +1495,32 @@ function onMessage(event) {
       renderIdleInterests();
       if (!els.filtersModal.classList.contains('is-hidden')) renderFilterOptions();
       break;
-    case 'banned': showBanned(); break;
+    case 'banned': showBanned(msg.unban); break;
   }
 }
-function showBanned() {
+function showBanned(unbanToken) {
   peers.forEach((_, id) => removePeer(id));
   if (moderationTimer) clearInterval(moderationTimer);
   if (ws) ws.close();
   if (localStream) localStream.getTracks().forEach((t) => t.stop());
   els.banned.style.display = 'flex';
+  // Paid unban: only offered when the server minted a token for this ban
+  // (it never does for "Under 18") and the Payment Link is configured.
+  if (unbanToken && unbanUrl) {
+    els.unbanBtn.textContent = 'Remove the ban — ' + UNBAN_PRICE;
+    // Assigned, not addEventListener: a repeat banned message must not stack
+    // handlers. window.open stays directly inside the click handler (a user
+    // gesture) or mobile popup blockers eat it — same rule as the upgrade
+    // prompt. client_reference_id is how the webhook knows which ban to lift.
+    els.unbanBtn.onclick = () => {
+      try {
+        const u = new URL(unbanUrl);
+        u.searchParams.set('client_reference_id', 'unban_' + unbanToken);
+        window.open(u.toString(), '_blank', 'noopener');
+      } catch { window.open(unbanUrl, '_blank', 'noopener'); }
+    };
+    show(els.unbanBtn, true); show(els.unbanNote, true);
+  }
 }
 
 // --- Actions --------------------------------------------------------------
@@ -1650,6 +1673,7 @@ async function initAuth() {
   let cfg;
   try { cfg = await (await fetch('/config', { cache: 'no-store' })).json(); } catch { return; }
   premiumUrl = cfg.premiumUrl || '';
+  unbanUrl = cfg.unbanUrl || '';
   if (!cfg.supabaseUrl || !cfg.supabaseAnonKey || !window.supabase) return;   // not configured / lib missing
   try {
     sb = window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey);

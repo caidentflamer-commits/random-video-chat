@@ -104,6 +104,21 @@ people together with a friend — or with a stranger you both chose to keep, via
   **LIVE MODE — taking real money since 2026-08-07.** Premium is $4.99/mo.
 - **Durable bans/reports:** written to Supabase when configured (confirmed
   `supabaseConnected: true`).
+- **Paid unban (2026-08-12) — BUILT, INERT until `STRIPE_UNBAN_LINK` is set:**
+  the banned screen offers "Remove the ban — $9.99" (a **one-time, payment-mode**
+  Stripe Payment Link, separate from the Premium subscription link). The link is
+  opened with `client_reference_id = 'unban_' + AES-GCM(ip)` — key derived from
+  `STRIPE_WEBHOOK_SECRET`, so no token storage, nothing breaks on deploy, and the
+  IP never appears in a URL or Stripe's records. The webhook decrypts it, drops
+  the IP from `bannedIps` and **expires** (not deletes) the Supabase `bans` rows,
+  so history stays auditable. **"Under 18" bans are never offered for sale** —
+  the server checks the latest ban reason before minting a token. Counted as
+  `unbans` on `/admin/stats`; 💰 ping on the Discord webhook per sale.
+  **To turn on:** Stripe (live) → create a one-time Product/price → Payment
+  Link → set `STRIPE_UNBAN_LINK` on Render. ⚠ Same price-in-two-places gotcha
+  as Premium: `UNBAN_PRICE` in `index.html` vs the real price on the link —
+  change both in the same sitting. The banned-screen copy ("lifts this ban
+  only… no refund") is the dispute defense; keep it if rewording.
 - **SEO:** meta/OG tags, `robots.txt`, `sitemap.xml` — all now point at
   `https://olumie.chat` (PR #24). **Search Console: `https://olumie.chat`
   verified 2026-08-07** as a URL-prefix property, alongside the older
@@ -207,9 +222,9 @@ Google STUN.
 Set: `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SECRET_KEY`,
 `SUPABASE_JWKS_URL`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`,
 `STRIPE_PAYMENT_LINK`, `REPORT_WEBHOOK_URL`.
-Not set: `TURN_KEY_ID` + `TURN_KEY_API_TOKEN` (Cloudflare relay — the only two
-values needed; the server mints the short-lived credentials itself, see
-`TURN.md`). `ADMIN_KEY` **is** set (2026-08-09).
+Not set: `STRIPE_UNBAN_LINK` (paid unban stays invisible until it is).
+`TURN_KEY_ID` + `TURN_KEY_API_TOKEN` **are** set (Cloudflare TURN live
+2026-08-10). `ADMIN_KEY` **is** set (2026-08-09).
 (`SUPPORT_URL` is **not** an env var — it's a constant at the top of
 `index.html`; the server never reads it.)
 The server accepts either the new (`SUPABASE_PUBLISHABLE_KEY`/`SECRET_KEY`) or
