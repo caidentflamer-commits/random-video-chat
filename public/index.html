@@ -15,6 +15,7 @@
 <meta name="theme-color" content="#0d1117" />
 <!-- Icons + manifest. iOS ignores manifest icons and reads apple-touch-icon;
      the maskable entry is for Android launchers that apply their own shape. -->
+<link rel="icon" href="/favicon.ico" sizes="any" />
 <link rel="icon" type="image/png" sizes="32x32" href="/icon-32.png" />
 <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
 <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
@@ -565,7 +566,6 @@
   <div class="c-modal__backdrop" id="interestsBackdrop"></div>
   <div class="c-modal__sheet" style="width:min(520px,100%)">
     <div><h3 class="c-h3" id="interestsTitle" style="font-size:var(--fs-md)">Your interests</h3><p class="c-body c-muted" style="font-size:var(--fs-sm)">Pick a few and we'll try to match you with someone who shares them.</p></div>
-    <input class="c-input" id="tag-search" type="text" placeholder="Search interests…" autocomplete="off" />
     <div id="tags"></div>
     <div class="c-modal__actions"><button class="c-btn" id="interestsDone">Done</button></div>
   </div>
@@ -739,7 +739,7 @@ const els = {
   idleInterests: $('idleInterests'),
   reportModal: $('report-modal'), reportTitle: $('reportTitle'), reasonChips: $('reasonChips'), reportNote: $('reportNote'),
   reportCancel: $('reportCancel'), reportSubmit: $('reportSubmit'), reportBackdrop: $('reportBackdrop'),
-  interestsModal: $('interests-modal'), tagSearch: $('tag-search'), tags: $('tags'), interestsDone: $('interestsDone'), interestsBackdrop: $('interestsBackdrop'),
+  interestsModal: $('interests-modal'), tags: $('tags'), interestsDone: $('interestsDone'), interestsBackdrop: $('interestsBackdrop'),
   filtersModal: $('filters-modal'), filtersBackdrop: $('filtersBackdrop'), filtersDone: $('filtersDone'), countryOptions: $('countryOptions'), languageOptions: $('languageOptions'),
   genderOptions: $('genderOptions'), genderLock: $('genderLock'),
   joinModal: $('join-modal'), joinBackdrop: $('joinBackdrop'), joinCodeInput: $('joinCodeInput'), joinCancel: $('joinCancel'), joinConfirm: $('joinConfirm'),
@@ -1035,21 +1035,15 @@ function openFilters() { renderFilterOptions(); show(els.filtersModal, true); }
 function closeFilters() { show(els.filtersModal, false); renderIdleInterests(); if (phase === 'searching') wsSend({ type: 'ready', ...matchPayload() }); }
 
 // --- Interests ------------------------------------------------------------
+// Deliberately short and broad: matching is exact-string overlap, so every
+// synonym or niche split lowers the odds two people ever share a tag — and
+// the "you both like X" icebreaker only fires on overlap.
 const INTEREST_OPTIONS = [
-  'Gaming','Video Games','Esports','Minecraft','Fortnite','Roblox','League of Legends','Valorant','Call of Duty','Among Us',
-  'Music','Rock','Pop','Hip Hop','Rap','K-Pop','EDM','Jazz','Classical','Metal','Country','Guitar','Piano','Singing','Producing',
-  'Movies','Anime','Manga','TV Shows','Netflix','Marvel','Horror','Comedy','Sci-Fi','Disney','Documentaries',
-  'Sports','Football','Soccer','Basketball','Baseball','Tennis','Golf','Hockey','MMA','Boxing','Cricket','Formula 1',
-  'Fitness','Gym','Running','Yoga','Hiking','Cycling','Swimming','Skateboarding','Surfing','Snowboarding','Climbing',
-  'Art','Drawing','Painting','Photography','Design','Fashion','Makeup','Tattoos','Architecture',
-  'Tech','Coding','Programming','AI','Crypto','Startups','Cars','Motorcycles','Aviation',
-  'Travel','Food','Cooking','Baking','Coffee','Wine','Foodie','Books','Reading','Writing','Poetry','Comics',
-  'Science','Space','Astronomy','History','Philosophy','Politics','Psychology','Economics',
-  'Nature','Animals','Dogs','Cats','Gardening','Fishing','Camping','Astrology',
-  'Dancing','Languages','Memes','Podcasts','Board Games','Chess','DIY','Investing','Volunteering','Meditation'
+  'Gaming','Music','Anime','Movies & TV','Memes','Sports','Gym','Art','Fashion',
+  'Tech','Cars','Food','Travel','Animals','Late night talks','Languages'
 ];
 const labelByKey = {}, chipByKey = {}, selected = new Set();
-INTEREST_OPTIONS.slice().sort((a, b) => a.localeCompare(b)).forEach((label) => {
+INTEREST_OPTIONS.forEach((label) => {
   const key = label.toLowerCase(); labelByKey[key] = label;
   const b = document.createElement('button'); b.type = 'button'; b.className = 'c-chip tag'; b.textContent = label; b.dataset.interest = key;
   b.addEventListener('click', () => toggleInterest(key)); els.tags.appendChild(b); chipByKey[key] = b;
@@ -1086,12 +1080,8 @@ function renderIdleInterests() {
 // calls that — one hook instead of four that can drift apart.
 function updateAccountUi() { show(els.manageBtn, !!(authUser && isPremium)); }
 renderIdleInterests();
-function openInterests() { show(els.interestsModal, true); els.tagSearch.focus(); }
+function openInterests() { show(els.interestsModal, true); }
 function closeInterests() { show(els.interestsModal, false); if (phase === 'searching') wsSend({ type: 'ready', ...matchPayload() }); }
-els.tagSearch.addEventListener('input', () => {
-  const q = els.tagSearch.value.trim().toLowerCase();
-  Object.values(chipByKey).forEach((b) => b.classList.toggle('hidden', q !== '' && !b.dataset.interest.includes(q)));
-});
 els.interestsDone.addEventListener('click', closeInterests);
 els.interestsBackdrop.addEventListener('click', closeInterests);
 els.editInterests.addEventListener('click', openInterests);
