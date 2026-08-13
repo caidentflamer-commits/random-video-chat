@@ -105,7 +105,7 @@ people together with a friend — or with a stranger you both chose to keep, via
 - **Durable bans/reports:** written to Supabase when configured (confirmed
   `supabaseConnected: true`).
 - **Paid unban (2026-08-12) — BUILT, INERT until `STRIPE_UNBAN_LINK` is set:**
-  the banned screen offers "Remove the ban — $9.99" (a **one-time, payment-mode**
+  the banned screen offers "Remove the ban — $4.99" (a **one-time, payment-mode**
   Stripe Payment Link, separate from the Premium subscription link). The link is
   opened with `client_reference_id = 'unban_' + AES-GCM(ip)` — key derived from
   `STRIPE_WEBHOOK_SECRET`, so no token storage, nothing breaks on deploy, and the
