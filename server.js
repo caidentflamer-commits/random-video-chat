@@ -137,7 +137,7 @@ const stripe = process.env.STRIPE_SECRET_KEY ? require('stripe')(process.env.STR
 // client_reference_id = 'unban_' + AES-GCM(ip), so the webhook can recover
 // which IP paid without the IP riding in a URL or Stripe's records — and
 // without storing tokens anywhere: the key derives from STRIPE_WEBHOOK_SECRET,
-// so tokens survive restarts and deploys. "Under 18" bans are never offered.
+// so tokens survive restarts and deploys.
 // Inert unless STRIPE_UNBAN_LINK and STRIPE_WEBHOOK_SECRET are both set.
 const UNBAN_URL = process.env.STRIPE_UNBAN_LINK || '';
 const unbanKey = process.env.STRIPE_WEBHOOK_SECRET
@@ -158,20 +158,12 @@ function readUnbanToken(tok) {
     return Buffer.concat([d.update(b.subarray(28)), d.final()]).toString('utf8');
   } catch { return null; }
 }
-// Is this IP's ban for sale? Mint a token if so. The reason lookup is
-// best-effort — a DB hiccup shouldn't strand an honest payer — but an
-// "Under 18" ban is never purchasable, at any price.
-async function unbanOffer(ip) {
-  if (!UNBAN_URL || !unbanKey || !ip) return null;
-  if (supa) {
-    try {
-      const { data } = await supa.from('bans').select('reason').eq('ip', ip)
-        .order('id', { ascending: false }).limit(1);
-      const reason = (data && data[0] && data[0].reason) || '';
-      if (/under\s*18|minor/i.test(reason)) return null;
-    } catch {}
-  }
-  return mintUnbanToken(ip);
+// Every ban is purchasable (decided 2026-08-12). Report reasons are chosen by
+// the reporter, not verified — a reason gate would just teach trolls which
+// chip makes a ban permanent. Instead, the 💰 webhook ping carries the
+// recorded reason, so a suspect purchase is visible for a manual re-ban.
+function unbanOffer(ip) {
+  return (UNBAN_URL && unbanKey && ip) ? mintUnbanToken(ip) : null;
 }
 // THROWS on a genuine write failure so the webhook answers 500 and Stripe shows
 // a failed delivery (and retries). A green 200 that silently wrote nothing is
@@ -185,6 +177,16 @@ async function handleStripeEvent(event) {
     if (s.client_reference_id && s.client_reference_id.startsWith('unban_')) {
       const ip = readUnbanToken(s.client_reference_id.slice('unban_'.length));
       if (!ip) { console.warn('stripe: unban payment with unreadable token — nobody was unbanned'); return; }
+      // Best-effort: what was this ban for? Rides in the log + Discord ping so
+      // a purchase worth a second look (e.g. an "Under 18" report) is visible.
+      let reason = '';
+      if (supa) {
+        try {
+          const { data } = await supa.from('bans').select('reason').eq('ip', ip)
+            .order('id', { ascending: false }).limit(1);
+          reason = (data && data[0] && data[0].reason) || '';
+        } catch {}
+      }
       bannedIps.delete(ip);
       if (supa) {
         // Expire rather than delete: the ban history stays auditable.
@@ -193,10 +195,10 @@ async function handleStripeEvent(event) {
         if (error) throw new Error(`unban expire failed for ${ip}: ${error.message}`);
       }
       bump('unbans');
-      console.log(`UNBAN paid: ${ip}`);
+      console.log(`UNBAN paid: ${ip}${reason ? ` (was banned for: ${reason})` : ''}`);
       const hook = process.env.REPORT_WEBHOOK_URL;
       if (hook && typeof fetch === 'function') {
-        try { fetch(hook, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: `💰 Paid unban: ${ip}` }) }).catch(() => {}); } catch {}
+        try { fetch(hook, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: `💰 Paid unban: ${ip}${reason ? ` — was banned for: **${reason}**` : ''}` }) }).catch(() => {}); } catch {}
       }
       return;
     }
@@ -974,10 +976,8 @@ function banSocket(socket) {
   console.log(`Banned IP ${socket.ip} (${socket.peerId})`);
   // The unban token must ride IN the banned message — the client tears the
   // socket down as soon as it sees one, so a follow-up would never arrive.
-  unbanOffer(socket.ip).then((tok) => {
-    send(socket, { type: 'banned', unban: tok || undefined });
-    setTimeout(() => { if (socket.readyState === socket.OPEN) socket.close(); }, 300);
-  });
+  send(socket, { type: 'banned', unban: unbanOffer(socket.ip) || undefined });
+  setTimeout(() => { if (socket.readyState === socket.OPEN) socket.close(); }, 300);
 }
 
 // ---- a socket leaves (disconnect or ban) ----------------------------------
@@ -1017,13 +1017,13 @@ wss.on('connection', (socket, req) => {
   socket.lastOpponents = [];
 
   if (bannedIps.has(socket.ip)) {
-    unbanOffer(socket.ip).then((tok) => { send(socket, { type: 'banned', unban: tok || undefined }); socket.close(); });
-    return;
+    send(socket, { type: 'banned', unban: unbanOffer(socket.ip) || undefined });
+    return socket.close();
   }
   // Durable ban check (survives restarts). Fast in-memory check above covers the
   // common case; this catches bans persisted before this process started.
-  dbIsBanned(socket.ip).then(async (banned) => {
-    if (banned && socket.readyState === socket.OPEN) { bannedIps.add(socket.ip); send(socket, { type: 'banned', unban: (await unbanOffer(socket.ip)) || undefined }); socket.close(); }
+  dbIsBanned(socket.ip).then((banned) => {
+    if (banned && socket.readyState === socket.OPEN) { bannedIps.add(socket.ip); send(socket, { type: 'banned', unban: unbanOffer(socket.ip) || undefined }); socket.close(); }
   });
   console.log(`Connected ${socket.peerId} (${socket.ip})`);
   if (wss.clients.size > stats.peakOnline) stats.peakOnline = wss.clients.size;
