@@ -104,6 +104,32 @@ curl -s -H "X-Admin-Key: $ADMIN_KEY" https://olumie.chat/admin/data
 `{"id":N,"action":"ban"|"dismiss"}` — the same decision the buttons make, via
 the same `decideReview()`.
 
+## If no card shows up
+
+Setting this up hit four separate walls, in this order. If a report arrives as a
+plain line with a ⚠️ instead of a card, it is almost certainly one of them —
+and `tools/discord_selftest.js` names which:
+
+```powershell
+cd "$HOME\Documents\random-video-chat"
+$env:DISCORD_BOT_TOKEN="..."; $env:DISCORD_CHANNEL_ID="..."; node tools/discord_selftest.js
+```
+
+1. **"Requires a code grant"** on the invite → Bot tab, turn **Requires OAuth2
+   Code Grant** off.
+2. **The bot never actually joined.** The invite can look like it worked. A 403
+   on posting with the webhook still delivering is the tell — they are separate
+   paths, so plain pings arriving proves nothing about the bot.
+3. **Token reset without updating Render.** Resetting invalidates the old token
+   instantly, so every send 401s while everything else looks fine.
+4. **Channel permissions.** The bot can be in the server and still not able to
+   post in that specific channel.
+
+A failed card always falls back to the webhook ping prefixed with
+⚠️ **card failed to post**, so a broken setup is loud rather than silent. The
+exact status is in the Render logs as `discord send failed <status> to channel
+<id>`: 401 token, 403 permissions, 404 wrong channel id.
+
 ## Gotchas
 
 - **The queue is in memory and empties on deploy.** Buttons on old cards will
