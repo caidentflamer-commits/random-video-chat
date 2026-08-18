@@ -305,8 +305,47 @@ const MIME = {
 // Strip links from chat (basic anti-scam). Bypassable client-side, so enforce here too.
 const LINK_RE = /(https?:\/\/\S+|www\.\S+|\b[a-z0-9-]+\.(?:com|net|org|io|co|gg|xyz|link|ru|tv|me|app|live|info|biz)\S*)/gi;
 
+// Sent on every response, including the API ones. 'unsafe-inline' and
+// 'unsafe-eval' are both unavoidable here — the whole app is one inline
+// <script>, and TensorFlow.js needs eval; without it nsfwjs fails to load and
+// moderation fails *open*, silently, which is worse than the eval. So this CSP
+// is not an XSS backstop. What it does buy: frame-ancestors (nobody wraps a
+// camera prompt in their own page), object-src, base-uri, and a fixed list of
+// hosts allowed to serve script.
+const CSP = [
+  "default-src 'self'",
+  "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net",
+  // clarity.css pulls Inter + JetBrains Mono from Google Fonts via @import;
+  // the stylesheet comes from googleapis, the font files from gstatic.
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+  "img-src 'self' data: blob:",
+  "font-src 'self' data: https://fonts.gstatic.com",
+  "media-src 'self' blob:",
+  "worker-src 'self' blob:",
+  // Supabase auth, the tfjs/nsfwjs bundles, and the NSFW model weights —
+  // nsfwjs.load() with no argument pulls those from that CloudFront bucket.
+  "connect-src 'self' https://cdn.jsdelivr.net https://*.supabase.co",
+  "object-src 'none'",
+  "base-uri 'self'",
+  "form-action 'self'",
+  "frame-ancestors 'none'",
+].join('; ');
+
+function setSecurityHeaders(req, res) {
+  res.setHeader('Content-Security-Policy', CSP);
+  res.setHeader('X-Frame-Options', 'DENY');            // for anything older than frame-ancestors
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Permissions-Policy', 'camera=(self), microphone=(self), geolocation=(), payment=()');
+  // Only meaningful over TLS, and Render terminates it in front of us.
+  if (String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim() === 'https') {
+    res.setHeader('Strict-Transport-Security', 'max-age=15552000');
+  }
+}
+
 const server = http.createServer((req, res) => {
   let urlPath = req.url.split('?')[0];
+  setSecurityHeaders(req, res);
 
   // Stripe webhook (POST) — raw body required for signature verification.
   if (req.method === 'POST' && urlPath === '/stripe/webhook') {
@@ -330,6 +369,71 @@ const server = http.createServer((req, res) => {
         console.error(`stripe handler error (${event.type}):`, e.message);
         res.writeHead(500); res.end('handler error');
       }
+    });
+    return;
+  }
+
+  // Discord interactions. Every button press and slash command lands here.
+  if (req.method === 'POST' && urlPath === '/discord/interactions') {
+    const chunks = [];
+    req.on('data', (c) => { chunks.push(c); if (chunks.length > 200) req.destroy(); });
+    req.on('end', () => {
+      const raw = Buffer.concat(chunks);
+      // 401 specifically — Discord disables an endpoint that doesn't reject
+      // its deliberately-bad probe requests.
+      if (!discordSignatureOk(req, raw)) { res.writeHead(401); return res.end('invalid request signature'); }
+      let body = {};
+      try { body = JSON.parse(raw.toString() || '{}'); } catch {}
+      const reply = (payload) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(payload));
+      };
+      const EPHEMERAL = 64;
+      const say = (content) => reply({ type: 4, data: { content, flags: EPHEMERAL } });
+
+      if (body.type === 1) return reply({ type: 1 });                        // PING
+
+      const user = (body.member && body.member.user) || body.user || {};
+      const allowed = discordAdminIds();
+      if (!allowed.length) return say('DISCORD_ADMIN_IDS is not set, so nobody is allowed to act. Set it to your Discord user ID on Render.');
+      if (!allowed.includes(String(user.id))) return say('You are not on the admin list for this app.');
+
+      if (body.type === 3) {                                                 // MESSAGE_COMPONENT
+        const [scope, action, id] = String((body.data && body.data.custom_id) || '').split(':');
+        if (scope !== 'review') return say('Unknown button.');
+        const out = decideReview(id, action, user.username || user.id);
+        const original = (body.message && body.message.embeds && body.message.embeds[0]) || {};
+        // Edit the card in place and drop the buttons, so the channel shows
+        // what was decided instead of a stale pair of tempting buttons.
+        return reply({
+          type: 7,
+          data: {
+            embeds: [{ ...original, color: out.ok && action === 'ban' ? 0x7f1d1d : 0x2b2f3a,
+              footer: { text: `${out.text} — by ${user.username || user.id}` } }],
+            components: [],
+          },
+        });
+      }
+
+      if (body.type === 2) {                                                 // APPLICATION_COMMAND
+        const name = (body.data && body.data.name) || '';
+        if (name === 'stats') return say(discordStatsText());
+        if (name === 'queue') {
+          const open = reviewQueue.filter((r) => r.status === 'open').slice().reverse();
+          if (!open.length) return say('Queue is empty.');
+          // Re-post the oldest few as fresh cards so they can be acted on here.
+          open.slice(0, 5).reverse().forEach((it) => discordSend(body.channel_id, reviewCard(it)));
+          return say(`${open.length} waiting — reposting the ${Math.min(5, open.length)} most recent as cards.`);
+        }
+        if (name === 'whoami') {
+          return say([
+            'What the server thinks your address is — every ban is keyed on this.',
+            `\`\`\`json\n${JSON.stringify({ trustedProxyHops: TRUSTED_PROXY_HOPS, note: 'open /admin/whoami?key=… from a phone on cell data to check a real client IP' }, null, 2)}\n\`\`\``,
+          ].join('\n'));
+        }
+        return say('Unknown command.');
+      }
+      return reply({ type: 4, data: { content: 'Unhandled interaction type.', flags: EPHEMERAL } });
     });
     return;
   }
@@ -413,8 +517,7 @@ const server = http.createServer((req, res) => {
 
   // Moderation report log (JSON). Gated by ?key=<ADMIN_KEY>; disabled if unset.
   if (urlPath === '/admin/reports') {
-    const key = new URLSearchParams((req.url.split('?')[1] || '')).get('key');
-    if (!process.env.ADMIN_KEY || key !== process.env.ADMIN_KEY) { res.writeHead(403); return res.end('Forbidden'); }
+    if (!adminKeyOk(req, new URLSearchParams((req.url.split('?')[1] || '')))) { res.writeHead(403); return res.end('Forbidden'); }
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
     return res.end(JSON.stringify({ count: recentReports.length, reports: recentReports.slice().reverse() }, null, 2));
   }
@@ -433,11 +536,89 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // There is no admin web page any more — Discord is the control surface, and
+  // a report arrives there as a card with Ban / Dismiss on it. What is left
+  // under /admin is JSON, for curl and for anything scripted.
+  if (urlPath === '/admin' || urlPath === '/admin/') {
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    return res.end(JSON.stringify({
+      surface: 'Discord — see DISCORD.md. Buttons on each queued report; /stats and /queue as slash commands.',
+      json: ['/admin/data', '/admin/stats', '/admin/review', '/admin/reports', '/admin/whoami'],
+      note: 'All take ?key=ADMIN_KEY or an X-Admin-Key header.',
+    }, null, 2));
+  }
+  // Everything in one round trip, for when you do want to look at raw numbers.
+  if (urlPath === '/admin/data') {
+    const q = new URLSearchParams((req.url.split('?')[1] || ''));
+    if (!adminKeyOk(req, q)) { res.writeHead(403); return res.end('Forbidden'); }
+    return referralPayouts().then((payouts) => {
+      const summary = statsSummary();
+      summary.referrals = {};
+      const refs = new Set([...refClicks.keys(), ...Object.keys(payouts || {})]);
+      refs.forEach((r) => {
+        summary.referrals[r] = { clicks: refClicks.get(r) || 0, ...(payouts && payouts[r] ? payouts[r] : { accounts: null, paying: null }) };
+      });
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({
+        stats: summary,
+        review: reviewQueue.filter((r) => r.status === 'open').slice().reverse(),
+        reports: recentReports.slice(-60).reverse(),
+        bans: bannedIps.size,
+        conn: {
+          clientIp: getClientIp(req),
+          trustedProxyHops: TRUSTED_PROXY_HOPS,
+          xForwardedFor: forwardedChain(req),
+          socketRemote: req.socket.remoteAddress || null,
+        },
+      }));
+    });
+  }
+
+  // The review queue as JSON, plus the POST that acts on an entry. The Discord
+  // buttons are the normal way in; this is the same decision by curl. It stays a
+  // POST so no prefetch, link preview or <img> in a chat can fire it.
+  if (urlPath === '/admin/review' || urlPath === '/admin/review/act') {
+    const q = new URLSearchParams((req.url.split('?')[1] || ''));
+    if (!adminKeyOk(req, q)) { res.writeHead(403); return res.end('Forbidden'); }
+    if (urlPath === '/admin/review/act') {
+      if (req.method !== 'POST') { res.writeHead(405); return res.end('POST only'); }
+      const chunks = [];
+      req.on('data', (c) => { chunks.push(c); if (chunks.length > 50) req.destroy(); });
+      req.on('end', () => {
+        let body = {};
+        try { body = JSON.parse(Buffer.concat(chunks).toString() || '{}'); } catch {}
+        const out = decideReview(body.id, body.action, 'curl');
+        if (!out.ok) { res.writeHead(400, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ error: out.text })); }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, id: out.item.id, status: out.item.status }));
+      });
+      return;
+    }
+    const open = reviewQueue.filter((r) => r.status === 'open').slice().reverse();
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    return res.end(JSON.stringify({ open: open.length, total: reviewQueue.length, items: open }, null, 2));
+  }
+
+  // One-hit check that TRUSTED_PROXY_HOPS matches whatever is in front of us:
+  // open it from a phone on cell data and confirm clientIp is that phone's
+  // public address and not something a header invented. Every ban is keyed on
+  // this value, so it is worth being sure rather than assuming.
+  if (urlPath === '/admin/whoami') {
+    if (!adminKeyOk(req, new URLSearchParams((req.url.split('?')[1] || '')))) { res.writeHead(403); return res.end('Forbidden'); }
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    return res.end(JSON.stringify({
+      clientIp: getClientIp(req),
+      trustedProxyHops: TRUSTED_PROXY_HOPS,
+      xForwardedFor: forwardedChain(req),
+      socketRemote: req.socket.remoteAddress || null,
+    }, null, 2));
+  }
+
   // Aggregate usage counters. Same ADMIN_KEY gate as /admin/reports, and the
   // same "inert until the env var is set" rule as everything else here.
   if (urlPath === '/admin/stats') {
     const q = new URLSearchParams((req.url.split('?')[1] || ''));
-    if (!process.env.ADMIN_KEY || q.get('key') !== process.env.ADMIN_KEY) { res.writeHead(403); return res.end('Forbidden'); }
+    if (!adminKeyOk(req, q)) { res.writeHead(403); return res.end('Forbidden'); }
     // Referral payouts come from Supabase (durable — money), the rest from the
     // in-memory counters; the page shows both side by side.
     return referralPayouts().then((payouts) => {
@@ -449,12 +630,8 @@ const server = http.createServer((req, res) => {
       });
       // HTML by default (this gets opened in a browser); JSON on request so
       // curl and anything scripted keeps working exactly as before.
-      if (q.get('format') === 'json') {
-        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-        return res.end(JSON.stringify(summary, null, 2));
-      }
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
-      return res.end(statsPage(summary));
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      return res.end(JSON.stringify(summary, null, 2));
     });
   }
 
@@ -477,7 +654,17 @@ const server = http.createServer((req, res) => {
 
 // ---- 2. WebSocket signaling + matchmaking + moderation -------------------
 
-const wss = new WebSocketServer({ server });
+// maxPayload: ws defaults to 100 MB per frame. Nothing we send is bigger than
+// an SDP blob, so the default was only ever an invitation to fill the
+// instance's memory from a single socket.
+const wss = new WebSocketServer({ server, maxPayload: 64 * 1024 });
+// Same reasoning as the per-socket handler below: an unhandled 'error' is fatal.
+wss.on('error', (err) => console.error('ws server error:', err && err.message));
+// Malformed HTTP before the socket exists (bad request line, oversized headers)
+// lands here instead, and is just as fatal if nobody is listening.
+server.on('clientError', (err, sock) => {
+  try { sock.destroy(); } catch {}
+});
 
 let searching = [];                 // parties currently in matchmaking (not in a session)
 const partiesByCode = new Map();    // join code -> party awaiting a second member
@@ -490,10 +677,68 @@ const RECENT_COOLDOWN_MS = 8000;    // don't instantly re-match the party you ju
 
 // ---- small utilities ------------------------------------------------------
 
+// X-Forwarded-For is a list the client can start and every proxy APPENDS to,
+// so the rightmost entries are the ones our own infrastructure wrote and the
+// leftmost is whatever the caller made up. Reading [0] meant a header could
+// name any address: free ban evasion, and — because bans are keyed by IP — the
+// ability to get an innocent address banned by claiming to be it. Count hops in
+// from the right instead; with one proxy in front of us (Render's) the last
+// entry is the real peer. Confirm the count on a given host with
+// /admin/whoami?key=ADMIN_KEY before touching TRUSTED_PROXY_HOPS.
+const TRUSTED_PROXY_HOPS = Math.max(1, parseInt(process.env.TRUSTED_PROXY_HOPS || '1', 10));
+function forwardedChain(req) {
+  return String(req.headers['x-forwarded-for'] || '').split(',').map((s) => s.trim()).filter(Boolean);
+}
 function getClientIp(req) {
-  const fwd = req.headers['x-forwarded-for'];
-  if (fwd) return fwd.split(',')[0].trim();
+  const fwd = forwardedChain(req);
+  if (fwd.length) return fwd[Math.max(0, fwd.length - TRUSTED_PROXY_HOPS)];
   return req.socket.remoteAddress || 'unknown';
+}
+
+// ---- flood control --------------------------------------------------------
+// Sockets are free to open and cost us memory, and the message handler does as
+// much work as it is asked to. Neither limit below is reachable by a real
+// household — a party of four on one Wi-Fi is four sockets — but both are
+// reachable in a second by a loop.
+const MAX_SOCKETS_PER_IP = 8;
+const CONNECTS_PER_IP_PER_MIN = 40;
+const MSG_BURST = 400;              // sized for a 4-way mesh trickling ICE for three peer connections
+const MSG_REFILL_PER_SEC = 40;
+const socketsPerIp = new Map();
+const connectTimes = new Map();
+
+function admitConnection(ip) {
+  const now = Date.now();
+  const times = (connectTimes.get(ip) || []).filter((t) => now - t < 60000);
+  connectTimes.set(ip, times);
+  if (times.length >= CONNECTS_PER_IP_PER_MIN) return false;
+  if ((socketsPerIp.get(ip) || 0) >= MAX_SOCKETS_PER_IP) return false;
+  times.push(now);
+  socketsPerIp.set(ip, (socketsPerIp.get(ip) || 0) + 1);
+  if (connectTimes.size > 5000) {
+    for (const [k, v] of connectTimes) { if (!v.some((t) => now - t < 60000)) connectTimes.delete(k); }
+  }
+  return true;
+}
+function releaseConnection(ip) {
+  const left = (socketsPerIp.get(ip) || 1) - 1;
+  if (left > 0) socketsPerIp.set(ip, left); else socketsPerIp.delete(ip);
+}
+function spendToken(socket) {
+  const now = Date.now();
+  const refill = Math.floor(((now - socket.lastRefill) / 1000) * MSG_REFILL_PER_SEC);
+  if (refill >= 1) { socket.tokens = Math.min(MSG_BURST, socket.tokens + refill); socket.lastRefill = now; }
+  if (socket.tokens <= 0) return false;
+  socket.tokens--;
+  return true;
+}
+// The key may arrive as a header instead of a query string. That is what the
+// /admin hub uses, which keeps ADMIN_KEY out of URLs — and so out of access
+// logs, Referer headers, browser history and anything that shoulder-surfs a
+// address bar. The ?key= form still works; every doc and bookmark uses it.
+function adminKeyOk(req, q) {
+  const key = req.headers['x-admin-key'] || (q && q.get('key')) || '';
+  return !!process.env.ADMIN_KEY && key === process.env.ADMIN_KEY;
 }
 function send(socket, obj) {
   if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(obj));
@@ -654,147 +899,120 @@ function statsSummary() {
 // counters live in memory and reset on deploy. Render keeps logs 7 days.
 setInterval(() => { console.log('STATS ' + JSON.stringify(statsSummary())); }, 60 * 60 * 1000);
 
-// ---- the numbers page -----------------------------------------------------
-// Reuses clarity.css and the app's own dark tokens so it looks like the product
-// rather than a debug dump. JSON is still there at ?format=json for curl.
-function humanUptime(sinceIso) {
-  const ms = Date.now() - new Date(sinceIso).getTime();
-  const m = Math.floor(ms / 60000), h = Math.floor(m / 60), d = Math.floor(h / 24);
-  if (d) return `${d}d ${h % 24}h`;
-  if (h) return `${h}h ${m % 60}m`;
-  return `${m}m`;
+// ---- Discord control surface ----------------------------------------------
+// The admin surface is Discord, not a web page. A queued report arrives as a
+// card with Ban / Dismiss on it, so acting on one is a notification and a tap.
+//
+// It has to be a BOT, not the old incoming webhook: Discord only lets
+// application-owned senders attach interactive components — a plain channel
+// webhook has its `components` field ignored outright. Inert until
+// DISCORD_BOT_TOKEN and DISCORD_CHANNEL_ID are set, like everything else here;
+// REPORT_WEBHOOK_URL still works and is still used for the plain pings.
+const DISCORD_API = 'https://discord.com/api/v10';
+const discordReady = () => !!(process.env.DISCORD_BOT_TOKEN && process.env.DISCORD_CHANNEL_ID);
+// Who is allowed to press the buttons. Anyone can SEE the channel; that is not
+// the same as being allowed to ban someone. Unset means nobody — fail closed,
+// because the alternative is every member of the server holding the ban hammer.
+function discordAdminIds() {
+  return String(process.env.DISCORD_ADMIN_IDS || '').split(',').map((x) => x.trim()).filter(Boolean);
 }
-// A rate is only meaningful once there's enough of it to mean anything; below
-// that this says "too early" rather than dressing up noise as a finding.
-function verdictForFailRate(rate, sample) {
-  if (rate === null || sample < 10) return { tone: 'idle', line: 'Not enough connections yet to read this.' };
-  if (rate === 0) return { tone: 'good', line: 'Every connection got through. No relay needed so far.' };
-  if (rate < 5) return { tone: 'good', line: 'Normal. A few failures are expected without a relay.' };
-  if (rate < 15) return { tone: 'warn', line: 'Worth watching. Around this level, TURN starts paying for itself.' };
-  return { tone: 'bad', line: 'High. This is the case TURN exists for — see TURN.md.' };
+
+async function discordSend(channelId, payload) {
+  if (!process.env.DISCORD_BOT_TOKEN) return null;
+  try {
+    const r = await fetch(`${DISCORD_API}/channels/${channelId}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bot ${process.env.DISCORD_BOT_TOKEN}` },
+      body: JSON.stringify(payload),
+    });
+    if (!r.ok) console.error(`discord send failed ${r.status}: ${(await r.text()).slice(0, 200)}`);
+    return r.ok;
+  } catch (e) { console.error('discord send error:', e && e.message); return false; }
 }
-function statsPage(s) {
-  const n = (v) => (v === null || v === undefined ? '—' : v.toLocaleString('en-US'));
-  const pctText = (v) => (v === null ? '—' : v + '%');
-  const mediaTotal = s.mediaOk + s.mediaFail;
-  const verdict = verdictForFailRate(s.mediaFailRate, mediaTotal);
-  // Funnel bars are scaled to the widest step so the drop-off is visible at a
-  // glance; without that, everything after step one is a sliver.
-  const steps = [
-    { label: 'Page loads', value: s.visits, note: 'reloads counted again' },
-    { label: 'Browsers', value: s.people, note: 'not humans — see below' },
-    { label: 'Pressed Start', value: s.starts, note: pctText(s.startRate) + ' of browsers' },
-    { label: 'Got matched', value: s.sessions * 2, note: pctText(s.matchRate) + ' of starts' },
-    { label: 'Stayed together', value: s.teamups, note: pctText(s.teamUpRate) + ' of matches' },
+
+// One card per queued report. custom_id carries the decision and the item id —
+// that is all the state a button needs, so a redeploy doesn't orphan the
+// buttons already sitting in the channel.
+function reviewCard(item) {
+  const v = item.verdict;
+  const lines = [
+    `**Target** \`${item.targetIp}\`  ·  **Reporter** \`${item.reporterIp}\``,
+    `**Why it's here** ${item.why || 'n/a'}`,
+    v ? `**Verdict** ${v.frames} frame(s) · ${Object.entries(v.scores).map(([k, n]) => `${k} ${n}`).join(' · ')}`
+      : '**Verdict** none — judge on the report alone',
   ];
-  const widest = Math.max(1, ...steps.map((x) => x.value));
-  const bars = steps.map((x) => `
-    <div class="step">
-      <div class="step-head"><span class="step-label">${x.label}</span><span class="step-value">${n(x.value)}</span></div>
-      <div class="track"><div class="fill" style="width:${Math.max(1.5, (x.value / widest) * 100)}%"></div></div>
-      <div class="step-note">${x.note}</div>
-    </div>`).join('');
+  if (item.note) lines.push(`**Note** ${String(item.note).replace(/`/g, "'").slice(0, 300)}`);
+  return {
+    embeds: [{
+      title: `Review #${item.id} · ${item.reason || 'unspecified'}`,
+      description: lines.join('\n'),
+      color: 0x7f1d1d,
+      timestamp: item.ts,
+    }],
+    components: [{
+      type: 1,
+      components: [
+        { type: 2, style: 4, label: 'Ban this IP', custom_id: `review:ban:${item.id}` },
+        { type: 2, style: 2, label: 'Dismiss', custom_id: `review:dismiss:${item.id}` },
+      ],
+    }],
+  };
+}
 
-  return `<!DOCTYPE html>
-<html lang="en"><head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<meta name="robots" content="noindex, nofollow" />
-<title>Olumie · numbers</title>
-<link rel="stylesheet" href="/clarity.css" />
-<style>
-  body { --primary:#6d63ff; --online:#3fcf6b; --danger:#fb5f7a; --warning:#f0a92e;
-         margin:0; min-height:100vh; padding:28px var(--gutter) 56px; font-family:var(--font-display); }
-  .wrap { max-width:960px; margin:0 auto; }
-  header { display:flex; align-items:baseline; justify-content:space-between; gap:16px; flex-wrap:wrap; margin-bottom:24px; }
-  h1 { font-size:var(--fs-xl); margin:0; letter-spacing:-0.02em; }
-  .sub { color:var(--text-muted); font-size:var(--fs-sm); }
-  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:12px; margin-bottom:28px; }
-  .card { background:var(--surface); border:1px solid var(--border); border-radius:var(--r-lg); padding:16px 18px; }
-  .card .k { font-size:var(--fs-xs); color:var(--text-muted); text-transform:uppercase; letter-spacing:.08em; }
-  .card .v { font-size:var(--fs-2xl); font-weight:var(--fw-bold); line-height:1.1; margin-top:6px; letter-spacing:-0.03em; }
-  .card .foot { font-size:var(--fs-xs); color:var(--text-subtle); margin-top:4px; }
-  h2 { font-size:var(--fs-md); margin:0 0 12px; }
-  .panel { background:var(--surface); border:1px solid var(--border); border-radius:var(--r-lg); padding:18px 20px; margin-bottom:28px; }
-  .step { margin-bottom:14px; }
-  .step:last-child { margin-bottom:0; }
-  .step-head { display:flex; justify-content:space-between; align-items:baseline; font-size:var(--fs-sm); }
-  .step-value { font-weight:var(--fw-bold); font-variant-numeric:tabular-nums; }
-  .track { height:8px; background:var(--surface-2); border-radius:var(--r-pill); overflow:hidden; margin-top:6px; }
-  .fill { height:100%; background:var(--primary); border-radius:var(--r-pill); }
-  .step-note { font-size:var(--fs-xs); color:var(--text-subtle); margin-top:4px; }
-  .verdict { border-radius:var(--r-lg); padding:18px 20px; border:1px solid; margin-bottom:28px; }
-  .verdict .rate { font-size:var(--fs-3xl); font-weight:var(--fw-bold); letter-spacing:-0.04em; line-height:1; }
-  .verdict .line { margin-top:8px; font-size:var(--fs-sm); }
-  .verdict .meta { margin-top:6px; font-size:var(--fs-xs); opacity:.75; }
-  .good { border-color:var(--online); background:var(--online-tint); color:var(--online); }
-  .warn { border-color:var(--warning); background:var(--warning-tint); color:var(--warning); }
-  .bad  { border-color:var(--danger); background:var(--danger-tint); color:var(--danger); }
-  .idle { border-color:var(--border); background:var(--surface); color:var(--text-muted); }
-  footer { color:var(--text-subtle); font-size:var(--fs-xs); line-height:1.7; border-top:1px solid var(--border); padding-top:16px; }
-  footer strong { color:var(--text-muted); }
-  a { color:var(--primary); }
-  .dot { width:8px; height:8px; border-radius:50%; background:var(--online); display:inline-block; margin-right:6px; }
-</style></head>
-<body class="c-root c-stage"><div class="wrap">
+// Applies a decision from either surface. Returns a line describing what
+// happened so the caller can show it wherever the press came from.
+function decideReview(id, action, who) {
+  const item = reviewQueue.find((r) => r.id === Number(id));
+  if (!item) return { ok: false, text: `#${id} is gone — the queue empties on deploy.` };
+  if (item.status !== 'open') return { ok: false, text: `#${id} was already ${item.status}.` };
+  if (action === 'ban') {
+    item.status = 'banned';
+    // banSocket() is what normally counts a ban, and it only runs for someone
+    // still connected. A decision made from the queue an hour later has nobody
+    // to disconnect, so count it here or the number quietly under-reports.
+    bump('bans');
+    bannedIps.add(item.targetIp);
+    dbInsertBan(item.targetIp, `review #${item.id}: ${item.reason || 'manual'}`);
+    // countIt=false: already counted above, and this is the same ban.
+    wss.clients.forEach((c) => { if (c.ip === item.targetIp && c.readyState === c.OPEN) banSocket(c, false); });
+  } else if (action === 'dismiss') {
+    item.status = 'dismissed';
+  } else return { ok: false, text: 'Unknown action.' };
+  item.decidedAt = new Date().toISOString();
+  item.decidedBy = who || 'admin';
+  console.log(`REVIEW-ACT ${item.status} #${item.id} ${item.targetIp} by ${item.decidedBy}`);
+  return { ok: true, item, text: item.status === 'banned' ? `Banned \`${item.targetIp}\`` : 'Dismissed' };
+}
 
-<header>
-  <div>
-    <h1>Olumie · numbers</h1>
-    <div class="sub"><span class="dot"></span>${n(s.online)} online now · counting for ${humanUptime(s.since)}</div>
-  </div>
-  <div class="sub">Refreshes every 30s · <a href="?format=json">JSON</a></div>
-</header>
+// Discord signs every interaction; an unsigned or badly signed one is either a
+// misconfiguration or someone probing the endpoint, and Discord itself sends
+// deliberately-invalid requests to check we reject them. Raw bytes only — the
+// signature covers the exact body, so this cannot be done after JSON.parse.
+const ED25519_SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
+function discordSignatureOk(req, raw) {
+  const pub = process.env.DISCORD_PUBLIC_KEY;
+  const sig = req.headers['x-signature-ed25519'];
+  const ts = req.headers['x-signature-timestamp'];
+  if (!pub || !sig || !ts) return false;
+  try {
+    const key = crypto.createPublicKey({
+      key: Buffer.concat([ED25519_SPKI_PREFIX, Buffer.from(pub, 'hex')]),
+      format: 'der', type: 'spki',
+    });
+    return crypto.verify(null, Buffer.concat([Buffer.from(ts), raw]), key, Buffer.from(sig, 'hex'));
+  } catch (e) { console.warn('discord signature check failed:', e && e.message); return false; }
+}
 
-<div class="grid">
-  <div class="card"><div class="k">Browsers</div><div class="v">${n(s.people)}</div><div class="foot">${n(s.returning)} came back · ${pctText(s.returnRate)}</div></div>
-  <div class="card"><div class="k">Conversations</div><div class="v">${n(s.sessions)}</div><div class="foot">${n(s.teamups)} became parties</div></div>
-  <div class="card"><div class="k">Peak online</div><div class="v">${n(s.peakOnline)}</div><div class="foot">at once, since last deploy</div></div>
-  <div class="card"><div class="k">Reports</div><div class="v">${n(s.reports)}</div><div class="foot">${n(s.bans)} bans issued · ${n(s.unbans)} paid unbans</div></div>
-</div>
-
-<h2>Where people drop off</h2>
-<div class="panel">${bars}</div>
-
-<h2>Connection health</h2>
-<div class="verdict ${verdict.tone}">
-  <div class="rate">${verdict.tone === 'idle' ? '—' : pctText(s.mediaFailRate)}</div>
-  <div class="line">${verdict.line}</div>
-  <div class="meta">${n(s.mediaFail)} failed of ${n(mediaTotal)} attempts · ${n(s.playBlocked)} blocked by autoplay (not a network fault)</div>
-</div>
-${Object.keys(s.referrals || {}).length ? `
-<h2>Creators</h2>
-<div class="panel">
-  <table style="width:100%;border-collapse:collapse;font-size:var(--fs-sm)">
-    <tr style="color:var(--text-muted);text-align:left">
-      <th style="padding:6px 0;font-weight:500">creator</th>
-      <th style="font-weight:500">clicks*</th>
-      <th style="font-weight:500">accounts</th>
-      <th style="font-weight:500">paying now</th>
-    </tr>
-    ${Object.entries(s.referrals).sort((a, b) => (b[1].paying || 0) - (a[1].paying || 0)).map(([r, v]) => `
-    <tr style="border-top:1px solid var(--border)">
-      <td style="padding:8px 0;font-family:var(--font-mono)">${r}</td>
-      <td style="font-variant-numeric:tabular-nums">${n(v.clicks)}</td>
-      <td style="font-variant-numeric:tabular-nums">${n(v.accounts)}</td>
-      <td style="font-variant-numeric:tabular-nums;font-weight:600">${n(v.paying)}</td>
-    </tr>`).join('')}
-  </table>
-  <div class="step-note" style="margin-top:10px">*clicks reset on deploy; accounts and paying-now are durable (Supabase) — payouts read from those. Link format: olumie.chat/?r=name</div>
-</div>` : ''}
-
-<footer>
-  <p><strong>Read these carefully.</strong> “Page loads” counts reloads again.
-  “Browsers” means browsers, not people — one person on a phone and a laptop is two,
-  two people sharing a laptop is one. Private-browsing visitors aren’t counted at all.</p>
-  <p><strong>Everything here resets on deploy</strong>, because the counters live in
-  memory. Counting since ${new Date(s.since).toUTCString()}. For history, the server
-  writes a <code>STATS</code> line to the Render logs every hour (kept 7 days).</p>
-</footer>
-
-</div>
-<script>setTimeout(function () { location.reload(); }, 30000);</script>
-</body></html>`;
+function discordStatsText() {
+  const st = statsSummary();
+  const open = reviewQueue.filter((r) => r.status === 'open').length;
+  return [
+    `**Online** ${st.online}  ·  **Peak** ${st.peakOnline}`,
+    `**Page loads** ${st.visits}  ·  **Browsers** ${st.people}  ·  **Started** ${st.starts}${st.startRate == null ? '' : ` (${st.startRate}%)`}`,
+    `**Sessions** ${st.sessions}  ·  **Skips** ${st.skips}  ·  **Reports** ${st.reports}  ·  **Bans** ${st.bans}`,
+    `**Queue** ${open} waiting  ·  **Banned IPs held** ${bannedIps.size}`,
+    `_counting since ${new Date(st.since).toUTCString()} — resets on deploy_`,
+  ].join('\n');
 }
 
 // ---- report audit trail ---------------------------------------------------
@@ -810,11 +1028,62 @@ function logReport(rec) {
   recentReports.push(rec);
   if (recentReports.length > MAX_REPORTS) recentReports.shift();
   dbInsertReport(rec);   // durable copy (no-op if Supabase unset)
+  notify(`🚩 **${rec.kind}** · reason: ${rec.reason || 'n/a'}${rec.note ? ` · note: ${rec.note}` : ''} · reporter ${rec.reporter} → ${rec.target || rec.targetIp || 'n/a'} · ${rec.action}`);
+}
+function notify(line) {
   const hook = process.env.REPORT_WEBHOOK_URL;
-  if (hook && typeof fetch === 'function') {
-    const line = `🚩 **${rec.kind}** · reason: ${rec.reason || 'n/a'}${rec.note ? ` · note: ${rec.note}` : ''} · reporter ${rec.reporter} → ${rec.target || rec.targetIp || 'n/a'} · ${rec.action}`;
-    try { fetch(hook, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: line.slice(0, 1900) }) }).catch(() => {}); } catch {}
+  if (!hook || typeof fetch !== 'function') return;
+  try { fetch(hook, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: line.slice(0, 1900) }) }).catch(() => {}); } catch {}
+}
+
+// ---- human review queue ---------------------------------------------------
+// Everything that did NOT earn an automatic ban lands here instead of being
+// thrown away: every non-visual reason (nobody can classify "this person is
+// 14" or "they want my Cash App" from a frame), plus visual reports whose
+// verdict came back clean or missing. Nothing here has banned anyone — it is
+// a list of things for a human to decide on.
+const reviewQueue = [];
+const MAX_REVIEW = 500;
+let reviewSeq = 1;
+
+function queueReview(rec) {
+  const item = { id: reviewSeq++, ts: new Date().toISOString(), status: 'open', ...rec };
+  reviewQueue.push(item);
+  if (reviewQueue.length > MAX_REVIEW) reviewQueue.shift();
+  console.log('REVIEW ' + JSON.stringify(item));
+  // With the bot configured this is an actionable card; without it, the old
+  // one-line ping, so nothing goes silent while Discord is being set up.
+  if (discordReady()) discordSend(process.env.DISCORD_CHANNEL_ID, reviewCard(item));
+  else notify(`📋 **Review queued** (#${item.id}) · ${item.reason || 'n/a'}${item.note ? ` · "${item.note}"` : ''} · target ${item.targetIp}${item.verdict ? ` · scores ${JSON.stringify(item.verdict.scores || {})}` : ' · no verdict'}`);
+  return item;
+}
+
+// A report only bans on its own when a visual reason came back with a positive
+// classification from the reporter's own browser. That verdict is client-
+// supplied — this is a P2P mesh, no frame ever reaches the server, so there is
+// nothing here to independently verify with. It raises the bar a long way past
+// one click; mayBan()'s budgets are what stop someone who forges it wholesale.
+const VISUAL_REASONS = new Set(['Nudity']);
+function confirmedExplicit(msg) {
+  const reason = String(msg.reason || '');
+  const visual = reason.startsWith('auto:') || VISUAL_REASONS.has(reason);
+  if (!visual) return { ban: false, why: 'non-visual reason — review only' };
+  const v = msg.verdict;
+  if (!v || typeof v !== 'object') return { ban: false, why: 'no verdict supplied' };
+  if (v.explicit !== true) return { ban: false, why: 'verdict came back clean' };
+  return { ban: true, why: 'confirmed explicit', verdict: sanitizeVerdict(v) };
+}
+// Never store the client's object as-is — it is attacker-shaped input that
+// ends up in an admin page and a webhook.
+function sanitizeVerdict(v) {
+  const scores = {};
+  if (v && v.scores && typeof v.scores === 'object') {
+    for (const k of ['Porn', 'Hentai', 'Sexy', 'Neutral', 'Drawing']) {
+      const n = Number(v.scores[k]);
+      if (Number.isFinite(n)) scores[k] = Math.round(Math.min(1, Math.max(0, n)) * 1000) / 1000;
+    }
   }
+  return { explicit: v.explicit === true, frames: Math.min(10, Math.max(0, parseInt(v.frames, 10) || 0)), scores };
 }
 
 // ---- parties, rooms & mesh -----------------------------------------------
@@ -960,8 +1229,11 @@ function dissolveSession(session, reenqueue) {
   // Drop the cross-party mesh connections and remember opponents for "Report last".
   pA.members.forEach((a) => pB.members.forEach((b) => {
     leavePair(a, b);
-    a.lastOpponents = (a.lastOpponents || []).concat({ ip: b.ip, at: now });
-    b.lastOpponents = (b.lastOpponents || []).concat({ ip: a.ip, at: now });
+    // peerId rides along so a "report the last person" pick identifies ONE of
+    // them. Without it the only handle was the IP list, which is why that path
+    // used to ban the whole batch.
+    a.lastOpponents = (a.lastOpponents || []).concat({ ip: b.ip, at: now, peerId: b.peerId });
+    b.lastOpponents = (b.lastOpponents || []).concat({ ip: a.ip, at: now, peerId: a.peerId });
   }));
   pA.session = null; pB.session = null;
   pA.recentlyLeft[pB.id] = now; pB.recentlyLeft[pA.id] = now;   // no instant re-match
@@ -970,8 +1242,51 @@ function dissolveSession(session, reenqueue) {
 
 // ---- moderation / bans ----------------------------------------------------
 
-function banSocket(socket) {
-  bump('bans');
+// A report bans instantly, by IP, durably — exactly right for a real flasher,
+// and catastrophic in a loop. Nothing used to stop a script running
+// search → match → report → next and burning a genuine user every few seconds;
+// since the only way back in is the paid unban link, the griefing even came
+// with a price tag attached. Two brakes below. Both throttle the *ban*, never
+// the report: a throttled report is still logged, still webhooked, still in
+// /admin/reports — it just stops pulling the trigger by itself.
+const REPORTER_BAN_BUDGET = 5;                  // bans one reporter IP can cause…
+const REPORTER_WINDOW_MS = 60 * 60 * 1000;      // …per hour
+const GLOBAL_BAN_BUDGET = 30;                   // site-wide bans per hour before the breaker trips
+const banTimesByReporter = new Map();           // reporter ip -> when the bans it caused happened
+let globalBanTimes = [];
+let breakerNotifiedAt = 0;
+
+function withinWindow(times, now) { return times.filter((t) => now - t < REPORTER_WINDOW_MS); }
+
+// `cost` is how many IPs this action wants to ban — report-last asks for
+// several at once. All-or-nothing: a request that doesn't fit the remaining
+// budget is refused whole rather than half-applied.
+function mayBan(reporterIp, cost) {
+  const now = Date.now();
+  globalBanTimes = withinWindow(globalBanTimes, now);
+  if (globalBanTimes.length + cost > GLOBAL_BAN_BUDGET) {
+    // Site-wide brake. If this trips, either something has gone badly wrong or
+    // someone is attacking the moderation system — both want a human, so it
+    // shouts once per window instead of quietly swallowing reports.
+    if (now - breakerNotifiedAt > REPORTER_WINDOW_MS) {
+      breakerNotifiedAt = now;
+      console.error(`BAN BREAKER TRIPPED — ${globalBanTimes.length} bans in the last hour; auto-bans paused, reports still recorded.`);
+      notify(`🛑 **Ban breaker tripped** — ${globalBanTimes.length} bans in the last hour. Auto-bans are paused; reports are still being recorded. Check /admin/reports.`);
+    }
+    return { ok: false, reason: 'site ban rate exceeded' };
+  }
+  const mine = withinWindow(banTimesByReporter.get(reporterIp) || [], now);
+  banTimesByReporter.set(reporterIp, mine);
+  if (mine.length + cost > REPORTER_BAN_BUDGET) return { ok: false, reason: 'reporter ban budget exceeded' };
+  for (let i = 0; i < cost; i++) { mine.push(now); globalBanTimes.push(now); }
+  if (banTimesByReporter.size > 5000) {
+    for (const [ip, times] of banTimesByReporter) { if (!withinWindow(times, now).length) banTimesByReporter.delete(ip); }
+  }
+  return { ok: true };
+}
+
+function banSocket(socket, countIt) {
+  if (countIt !== false) bump('bans');
   bannedIps.add(socket.ip);
   console.log(`Banned IP ${socket.ip} (${socket.peerId})`);
   // The unban token must ride IN the banned message — the client tears the
@@ -1015,6 +1330,16 @@ wss.on('connection', (socket, req) => {
   socket.ip = getClientIp(req);
   socket.party = null;
   socket.lastOpponents = [];
+  socket.tokens = MSG_BURST;
+  socket.lastRefill = Date.now();
+
+  // Cheap floods first — one machine holding sockets open, or reconnecting in a
+  // tight loop, costs the attacker nothing and costs a $7 instance everything.
+  if (!admitConnection(socket.ip)) {
+    console.warn(`Refused connection from ${socket.ip} — per-IP limit`);
+    return socket.close(1013, 'too many connections');
+  }
+  socket.counted = true;
 
   if (bannedIps.has(socket.ip)) {
     send(socket, { type: 'banned', unban: unbanOffer(socket.ip) || undefined });
@@ -1028,7 +1353,23 @@ wss.on('connection', (socket, req) => {
   console.log(`Connected ${socket.peerId} (${socket.ip})`);
   if (wss.clients.size > stats.peakOnline) stats.peakOnline = wss.clients.size;
 
+  // In Node an 'error' event with no listener is rethrown and kills the
+  // process — so a single oversized frame, protocol violation or abrupt reset
+  // from ONE visitor took the whole site down with it. ws surfaces those on the
+  // socket, which is why this has to be here and not only on the server.
+  socket.on('error', (err) => {
+    console.warn(`Socket error ${socket.peerId} (${socket.ip}): ${err && err.message}`);
+    try { socket.close(); } catch {}
+  });
+
   socket.on('message', (raw) => {
+    // Token bucket, sized for the real worst case: a 4-way mesh trickling ICE
+    // candidates across three peer connections at once. Past that it's a
+    // script, and a script that ignores the brake gets dropped.
+    if (!spendToken(socket)) {
+      console.warn(`Rate-limited ${socket.peerId} (${socket.ip}) — closing`);
+      return socket.close(1008, 'slow down');
+    }
     let msg;
     try { msg = JSON.parse(raw); } catch { return; }
 
@@ -1167,14 +1508,29 @@ wss.on('connection', (socket, req) => {
       case 'report': {
         const target = roomMembers(socket).find((m) => m.peerId === msg.to && m !== socket);
         if (!target) break;
+        const reason = String(msg.reason || '').slice(0, 80);
+        const note = String(msg.note || '').slice(0, 200);
+        const check = confirmedExplicit(msg);
+        // Two independent gates, in this order: the report must have earned a
+        // ban at all, and only then does the rate budget get consulted. A
+        // report that was never going to ban must not burn budget.
+        const gate = check.ban ? mayBan(socket.ip, 1) : { ok: false, reason: check.why };
         logReport({
-          kind: String(msg.reason || '').startsWith('auto:') ? 'auto-moderation' : 'user-report',
+          kind: reason.startsWith('auto:') ? 'auto-moderation' : 'user-report',
           reporter: socket.peerId, reporterIp: socket.ip, target: target.peerId, targetIp: target.ip,
-          reason: String(msg.reason || '').slice(0, 80), note: String(msg.note || '').slice(0, 200), action: 'banned',
+          reason, note,
+          action: gate.ok ? 'banned' : `NOT banned — ${gate.reason}`,
         });
         const p = socket.party;
-        dbInsertBan(target.ip, String(msg.reason || '').slice(0, 80));   // durable ban
-        banSocket(target);
+        if (gate.ok) {
+          dbInsertBan(target.ip, reason);   // durable ban
+          banSocket(target);
+        } else {
+          queueReview({ reason, note, targetIp: target.ip, target: target.peerId, reporterIp: socket.ip, reporter: socket.peerId, verdict: check.verdict || null, why: gate.reason });
+        }
+        // The reporter leaves the room either way. A throttled ban is our
+        // problem, not theirs, and stranding someone with the person they just
+        // reported is the one outcome worse than a missed ban.
         send(socket, { type: 'report-ack' });
         if (p && p.session) dissolveSession(p.session, p.session.parties.filter((x) => x.members.length));
         break;
@@ -1182,18 +1538,26 @@ wss.on('connection', (socket, req) => {
       case 'report-last': {
         const cutoff = Date.now() - REPORT_LAST_GRACE_MS;
         const recent = (socket.lastOpponents || []).filter((o) => o.at >= cutoff);
-        if (recent.length) {
-          recent.forEach((o) => { bannedIps.add(o.ip); dbInsertBan(o.ip, 'report-last'); });
-          logReport({
-            kind: 'report-last', reporter: socket.peerId, reporterIp: socket.ip, target: null,
-            targetIp: recent.map((o) => o.ip).join(','), reason: String(msg.reason || '').slice(0, 80),
-            note: String(msg.note || '').slice(0, 200), action: `banned ${recent.length} ip(s)`,
-          });
-          // Disconnect any of those still online.
-          wss.clients.forEach((c) => { if (recent.some((o) => o.ip === c.ip) && c.readyState === c.OPEN) banSocket(c); });
-          send(socket, { type: 'report-ack', last: true });
-          socket.lastOpponents = [];
-        }
+        // ONE person, named by the picker — this used to ban everyone from the
+        // last 30 seconds, so a fast skipper took out innocent bystanders with
+        // a single tap. No pick, no action.
+        const chosen = recent.find((o) => o.peerId === msg.peerId);
+        if (!chosen) { send(socket, { type: 'report-ack', last: true }); break; }
+        const reason = String(msg.reason || '').slice(0, 80);
+        const note = String(msg.note || '').slice(0, 200);
+        const check = confirmedExplicit(msg);
+        const gate = check.ban ? mayBan(socket.ip, 1) : { ok: false, reason: check.why };
+        if (gate.ok) { bannedIps.add(chosen.ip); dbInsertBan(chosen.ip, reason || 'report-last'); }
+        logReport({
+          kind: 'report-last', reporter: socket.peerId, reporterIp: socket.ip, target: chosen.peerId,
+          targetIp: chosen.ip, reason, note,
+          action: gate.ok ? 'banned' : `NOT banned — ${gate.reason}`,
+        });
+        if (gate.ok) wss.clients.forEach((c) => { if (c.ip === chosen.ip && c.readyState === c.OPEN) banSocket(c); });
+        else queueReview({ reason, note, targetIp: chosen.ip, target: chosen.peerId, reporterIp: socket.ip, reporter: socket.peerId, verdict: check.verdict || null, why: gate.reason });
+        send(socket, { type: 'report-ack', last: true });
+        // Only the reported one is spent; the others stay reportable.
+        socket.lastOpponents = (socket.lastOpponents || []).filter((o) => o !== chosen);
         break;
       }
     }
@@ -1201,6 +1565,7 @@ wss.on('connection', (socket, req) => {
 
   socket.on('close', () => {
     console.log(`Disconnected ${socket.peerId}`);
+    if (socket.counted) { releaseConnection(socket.ip); socket.counted = false; }
     leaveAll(socket);
   });
 });

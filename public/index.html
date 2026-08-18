@@ -31,9 +31,17 @@
 
 <!-- In-browser NSFW detection (free, no API key). tfjs is the ML engine;
      nsfwjs is the model that scores a frame for explicit content.
-     If these fail to load, the app still works — the shield shows "off". -->
-<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.21.0/dist/tf.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/nsfwjs@2.4.2/dist/nsfwjs.min.js"></script>
+     If these fail to load, the app still works — the shield shows "off".
+
+     Pinned to tfjs 4.x / nsfwjs 4.x deliberately. On tfjs 3.21 the WebGL
+     backend ran this model to a CONSTANT — identical scores for a grey frame,
+     random noise and a striped pattern alike — on ordinary desktop hardware
+     (Chrome 148, RTX 4070, WebGL2, healthy weights, basic ops fine). The
+     model loaded, the shield said "on", and nothing was being looked at.
+     4.22 classifies correctly on the same machine at ~12 ms a frame. Do not
+     downgrade these without re-running the self-test in initModeration(). -->
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/nsfwjs@4.2.1/dist/browser/nsfwjs.min.js"></script>
 
 <!-- Clarity design system -->
 <link rel="stylesheet" href="clarity.css" />
@@ -141,6 +149,14 @@
   /* Phone-only controls. Desktop keeps the permanent chat panel and the
      per-tile report flag, so neither of these has anything to do there. */
   #chatBtn, #reportBtn { display: none; }
+  .picker-choice {
+    display:flex; flex-direction:column; align-items:center; gap:6px;
+    padding:8px; border-radius:var(--radius-md); border:1px solid var(--line);
+    background:transparent; color:var(--text); cursor:pointer; font:inherit;
+  }
+  .picker-choice:hover { border-color:var(--accent); }
+  .picker-choice canvas { border-radius:var(--radius-sm); display:block; background:#000; }
+  .picker-choice span { font-size:var(--fs-xs); color:var(--muted); }
   .report-last {
     margin-left: auto; display: flex; align-items: center; gap: 6px; background: none; border: 0; padding: 0;
     cursor: pointer; font: var(--fw-medium) var(--fs-xs)/1 var(--font-display); color: var(--text-muted);
@@ -535,13 +551,29 @@
   </div>
 </div>
 
+<!-- Which stranger? Thumbnails come from frames this browser already sampled
+     for moderation — they are never uploaded, and they die with the tab. -->
+<div class="c-modal is-hidden" id="picker-modal" role="dialog" aria-modal="true" aria-labelledby="pickerTitle">
+  <div class="c-modal__backdrop" id="pickerBackdrop"></div>
+  <div class="c-modal__sheet">
+    <div>
+      <h3 class="c-h3" id="pickerTitle" style="font-size:var(--fs-md)">Who do you want to report?</h3>
+      <p class="c-body c-muted" style="font-size:var(--fs-sm)">The last few people you were connected to. These pictures stay on your device.</p>
+    </div>
+    <div id="pickerGrid" style="display:flex;gap:10px;flex-wrap:wrap"></div>
+    <div class="c-modal__actions">
+      <button class="c-btn c-btn--ghost" id="pickerCancel">Cancel</button>
+    </div>
+  </div>
+</div>
+
 <!-- Report modal -->
 <div class="c-modal is-hidden" id="report-modal" role="dialog" aria-modal="true" aria-labelledby="reportTitle">
   <div class="c-modal__backdrop" id="reportBackdrop"></div>
   <div class="c-modal__sheet">
     <div>
       <h3 class="c-h3" id="reportTitle" style="font-size:var(--fs-md)">Report</h3>
-      <p class="c-body c-muted" style="font-size:var(--fs-sm)">They're disconnected right away and you won't be matched again. A moderator reviews this, usually within the hour.</p>
+      <p class="c-body c-muted" style="font-size:var(--fs-sm)">You're disconnected right away and you won't be matched again. A moderator reviews every report.</p>
     </div>
     <div style="display:flex;flex-wrap:wrap;gap:8px" id="reasonChips">
       <button class="c-chip" data-reason="Nudity">Nudity</button>
@@ -721,8 +753,20 @@ async function fetchIce() {
 const FLAG_SVG = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--danger)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 21V4"/><path d="M5 5h11l-1.6 3.6L16 12H5z" fill="var(--danger)" stroke="none"/><path d="M5 4h11l-1.6 4L16 12H5z"/></svg>';
 
 // --- Moderation tuning ----------------------------------------------------
+// Pinned, and deliberately not nsfwjs's built-in default: that default points
+// at a CloudFront bucket which no longer resolves at all, so load() threw,
+// initModeration() caught it, and moderation sat silently off in production.
+// This copy is on jsdelivr, which the CSP already allows for scripts.
+const NSFW_MODEL_URL = 'https://cdn.jsdelivr.net/gh/infinitered/nsfwjs@v4.2.1/models/mobilenet_v2/';
 const SAMPLE_MS = 4000, EXPLICIT_THRESHOLD = 0.60, SEXY_THRESHOLD = 0.85;
 const TRIPS_BEFORE_ACTION = 2, MAX_STRIKES = 3, REPORT_LAST_MS = 10000;
+// How many sampled frames to keep per person, and how many people to remember
+// after they're gone. Small on purpose — this is evidence for a report you're
+// about to file, not a recording.
+const RETAINED_FRAMES = 3, MAX_RECENT_STRANGERS = 5, RECENT_STRANGER_MS = 30000;
+// The only reason a frame can settle. Nothing classifies "this person is 14"
+// or "they want my Cash App", so those reasons go to a human instead.
+const VISUAL_REASONS = new Set(['Nudity']);
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -740,6 +784,7 @@ const els = {
   idleRules: $('idleRules'), connectedHelp: $('connectedHelp'), reportLast: $('reportLast'), editInterests: $('editInterests'),
   idleInterests: $('idleInterests'),
   reportModal: $('report-modal'), reportTitle: $('reportTitle'), reasonChips: $('reasonChips'), reportNote: $('reportNote'),
+  pickerModal: $('picker-modal'), pickerGrid: $('pickerGrid'), pickerCancel: $('pickerCancel'), pickerBackdrop: $('pickerBackdrop'),
   reportCancel: $('reportCancel'), reportSubmit: $('reportSubmit'), reportBackdrop: $('reportBackdrop'),
   interestsModal: $('interests-modal'), tags: $('tags'), interestsDone: $('interestsDone'), interestsBackdrop: $('interestsBackdrop'),
   filtersModal: $('filters-modal'), filtersBackdrop: $('filtersBackdrop'), filtersDone: $('filtersDone'), countryOptions: $('countryOptions'), languageOptions: $('languageOptions'),
@@ -1189,7 +1234,16 @@ async function initModeration() {
   moderationState = 'loading'; updateShield();
   try {
     if (typeof nsfwjs === 'undefined' || typeof tf === 'undefined') throw new Error('Safety libraries did not load.');
-    nsfwModel = await nsfwjs.load(); moderationState = 'on';
+    nsfwModel = await nsfwjs.load(NSFW_MODEL_URL);
+    // A model that loads is not a model that works. Prove it discriminates
+    // before claiming moderation is on; if WebGL is the liar, retry on CPU.
+    if (!(await backendSeesImages(nsfwModel))) {
+      console.warn('Moderation: backend returned a constant on WebGL — retrying on CPU.');
+      await tf.setBackend('cpu'); await tf.ready();
+      nsfwModel = await nsfwjs.load(NSFW_MODEL_URL);   // weights live on the old backend, so reload
+      if (!(await backendSeesImages(nsfwModel))) throw new Error('Model is not classifying on any backend.');
+    }
+    moderationState = 'on';
     if (moderationTimer) clearInterval(moderationTimer);
     moderationTimer = setInterval(moderationTick, SAMPLE_MS);
   } catch (err) { console.warn('Moderation disabled:', err); nsfwModel = null; moderationState = 'off'; }
@@ -1197,12 +1251,80 @@ async function initModeration() {
 }
 // Each tick: check your own camera, plus one remote peer (round-robin to bound CPU).
 async function moderationTick() { await checkOwnCamera(); await checkOneRemote(); }
+// Two images a working classifier cannot possibly score identically. If the
+// scores come back byte-for-byte equal, the model is not reading its input —
+// which is precisely how tfjs 3.21's WebGL backend failed here: silently, with
+// every frame returning the same five numbers. Costs ~25 ms, once, at startup.
+async function backendSeesImages(model) {
+  const c = document.createElement('canvas'); c.width = 224; c.height = 224;
+  const x = c.getContext('2d');
+  const seen = [];
+  const paints = [
+    (z) => { z.fillStyle = '#808080'; z.fillRect(0, 0, 224, 224); },
+    (z) => { for (let i = 0; i < 224; i += 8) { z.fillStyle = i % 16 ? '#000' : '#fff'; z.fillRect(i, 0, 8, 224); } },
+  ];
+  for (const paint of paints) {
+    paint(x);
+    const preds = await model.classify(c);
+    seen.push(preds.map((p) => p.probability.toFixed(5)).join(','));
+  }
+  return seen[0] !== seen[1];
+}
+function captureFrame(video) {
+  const c = document.createElement('canvas'); c.width = 224; c.height = 224;
+  c.getContext('2d').drawImage(video, 0, 0, 224, 224);
+  return c;
+}
+async function classifyCanvas(canvas) {
+  const s = {};
+  (await nsfwModel.classify(canvas)).forEach((p) => { s[p.className] = p.probability; });
+  return s;
+}
+function isExplicit(s) {
+  return ((s['Porn'] || 0) + (s['Hentai'] || 0)) >= EXPLICIT_THRESHOLD || (s['Sexy'] || 0) >= SEXY_THRESHOLD;
+}
 function scoreExplicit(video) {
   const ctx = els.sampler.getContext('2d'); ctx.drawImage(video, 0, 0, els.sampler.width, els.sampler.height);
-  return nsfwModel.classify(els.sampler).then((preds) => {
-    const s = {}; preds.forEach((p) => { s[p.className] = p.probability; });
-    return ((s['Porn'] || 0) + (s['Hentai'] || 0)) >= EXPLICIT_THRESHOLD || (s['Sexy'] || 0) >= SEXY_THRESHOLD;
-  });
+  return classifyCanvas(els.sampler).then(isExplicit);
+}
+// Kept so a report has something to check AFTER the stranger has gone —
+// "report the last person" had nothing to look at, which is why that path could
+// never verify anything and simply banned on trust. These canvases live in this
+// tab, in memory. They are never uploaded, never written to disk, never sent to
+// the server; the only thing that leaves is a verdict made of numbers. They die
+// with the tab, or when the 30-second window closes.
+let recentStrangers = [];
+function retainFrame(entry, canvas) {
+  entry.frames = entry.frames || [];
+  entry.frames.push(canvas);
+  while (entry.frames.length > RETAINED_FRAMES) entry.frames.shift();
+}
+function pruneStrangers() {
+  const cutoff = Date.now() - RECENT_STRANGER_MS;
+  recentStrangers = recentStrangers.filter((r) => r.at >= cutoff);
+  while (recentStrangers.length > MAX_RECENT_STRANGERS) recentStrangers.shift();
+}
+function rememberStranger(peerId, entry) {
+  if (entry.friend || !entry.frames || !entry.frames.length) return;
+  recentStrangers.push({ peerId, at: Date.now(), frames: entry.frames.slice(), scores: entry.lastScores || null });
+  pruneStrangers();
+}
+// Classifies frames this browser already has and returns numbers, not pictures.
+// A clean result does not mean nothing happened — it means the ban has to be a
+// person's decision rather than an automatic one.
+async function verdictFor(frames) {
+  if (!nsfwModel || !frames || !frames.length) return null;
+  let worst = null, explicit = false;
+  for (const f of frames) {
+    try {
+      const sc = await classifyCanvas(f);
+      if (!worst || ((sc.Porn || 0) + (sc.Hentai || 0)) > ((worst.Porn || 0) + (worst.Hentai || 0))) worst = sc;
+      if (isExplicit(sc)) explicit = true;
+    } catch (err) { console.warn('Verdict frame failed:', err); }
+  }
+  if (!worst) return null;
+  const r = (n) => Math.round((n || 0) * 1000) / 1000;
+  return { explicit, frames: frames.length, scores: { Porn: r(worst.Porn), Hentai: r(worst.Hentai), Sexy: r(worst.Sexy), Neutral: r(worst.Neutral), Drawing: r(worst.Drawing) } };
 }
 async function checkOwnCamera() {
   if (!nsfwModel || !localStream || peers.size === 0) return;   // only when others can see you
@@ -1221,16 +1343,26 @@ async function checkOneRemote() {
   if (!list.length) return;
   const [id, entry] = list[remoteIdx++ % list.length];
   try {
-    if (await scoreExplicit(entry.video)) { entry.trips = (entry.trips || 0) + 1; if (entry.trips >= TRIPS_BEFORE_ACTION) autoModerateRemote(id); }
+    // Capture once, keep it, and score the very frame we kept — so the evidence
+    // a report is judged on is the same image the detector saw.
+    const frame = captureFrame(entry.video);
+    retainFrame(entry, frame);
+    const sc = await classifyCanvas(frame);
+    entry.lastScores = sc;
+    if (isExplicit(sc)) { entry.trips = (entry.trips || 0) + 1; if (entry.trips >= TRIPS_BEFORE_ACTION) autoModerateRemote(id); }
     else entry.trips = 0;
   } catch (err) { console.warn('Remote safety check error:', err); }
 }
 // Detected explicit content from a stranger: skip out and report them.
-function autoModerateRemote(peerId) {
+async function autoModerateRemote(peerId) {
   const entry = peers.get(peerId); if (!entry) return;
   entry.trips = 0;
   const wasFriend = entry.friend;
-  wsSend({ type: 'report', to: peerId, reason: 'auto: explicit content detected' });
+  // The server bans on the verdict, not on the word "auto:" — that prefix is a
+  // label anyone could type down the socket. Falls back to the scores that
+  // actually tripped if the retained frames have already rotated out.
+  const verdict = (await verdictFor(entry.frames)) || { explicit: true, frames: 0, scores: entry.lastScores || {} };
+  wsSend({ type: 'report', to: peerId, reason: 'auto: explicit content detected', verdict });
   toast('Skipped: inappropriate content detected.');
   clearChat();
   // Reporting someone in your own party ends the party rather than putting you
@@ -1414,6 +1546,7 @@ function removePeer(peerId) {
   clearTimeout(entry.iceTimer);
   try { entry.pc.close(); } catch {}
   if (entry.tile) entry.tile.remove();
+  rememberStranger(peerId, entry);
   peers.delete(peerId);
   els.remoteGrid.dataset.n = peers.size;
   render();
@@ -1607,23 +1740,59 @@ let reportReason = null;
 els.reasonChips.querySelectorAll('.c-chip').forEach((chip) => chip.addEventListener('click', () => {
   els.reasonChips.querySelectorAll('.c-chip').forEach((c) => c.classList.remove('is-selected')); chip.classList.add('is-selected'); reportReason = chip.dataset.reason;
 }));
+// `target` is either a live peerId or { kind:'last', peerId } from the picker.
 function openReport(peerId, name) {
   reportTarget = peerId; reportReason = null;
   els.reasonChips.querySelectorAll('.c-chip').forEach((c) => c.classList.remove('is-selected'));
   els.reportNote.value = ''; els.reportTitle.textContent = 'Report ' + (name || 'this person'); show(els.reportModal, true);
 }
 function closeReport() { show(els.reportModal, false); }
-els.reportLast.addEventListener('click', () => { reportTarget = 'last'; reportReason = null; els.reasonChips.querySelectorAll('.c-chip').forEach((c) => c.classList.remove('is-selected')); els.reportNote.value = ''; els.reportTitle.textContent = 'Report the last person'; show(els.reportModal, true); });
+// Pick one, not all. This used to fire a single blind report that banned
+// everyone from the last 30 seconds — a fast skipper took bystanders with them.
+function openPicker() {
+  pruneStrangers();
+  if (!recentStrangers.length) { toast('Nobody recent to report.'); return; }
+  els.pickerGrid.innerHTML = '';
+  [...recentStrangers].reverse().forEach((st) => {
+    const b = document.createElement('button');
+    b.className = 'picker-choice';
+    const c = document.createElement('canvas'); c.width = 96; c.height = 96;
+    c.getContext('2d').drawImage(st.frames[st.frames.length - 1], 0, 0, 96, 96);
+    b.appendChild(c);
+    const secs = Math.max(1, Math.round((Date.now() - st.at) / 1000));
+    const lbl = document.createElement('span'); lbl.textContent = secs + 's ago';
+    b.appendChild(lbl);
+    b.addEventListener('click', () => { show(els.pickerModal, false); openReport({ kind: 'last', peerId: st.peerId }, 'this person'); });
+    els.pickerGrid.appendChild(b);
+  });
+  show(els.pickerModal, true);
+}
+els.reportLast.addEventListener('click', openPicker);
+els.pickerCancel.addEventListener('click', () => show(els.pickerModal, false));
+els.pickerBackdrop.addEventListener('click', () => show(els.pickerModal, false));
 els.reportCancel.addEventListener('click', closeReport);
 els.reportBackdrop.addEventListener('click', closeReport);
-els.reportSubmit.addEventListener('click', () => {
-  const payload = { reason: reportReason || 'unspecified', note: els.reportNote.value.trim().slice(0, 500) };
-  if (reportTarget === 'last') { wsSend({ type: 'report-last', ...payload }); show(els.reportLast, false); }
-  else if (reportTarget) {
-    wsSend({ type: 'report', to: reportTarget, ...payload });
+els.reportSubmit.addEventListener('click', async () => {
+  const reason = reportReason || 'unspecified';
+  const payload = { reason, note: els.reportNote.value.trim().slice(0, 500) };
+  const target = reportTarget;
+  closeReport();
+  if (!target) return;
+  // Only a visual reason can be settled by looking. Everything else goes
+  // straight to a person — no frame can tell you someone's age or intent.
+  const visual = VISUAL_REASONS.has(reason);
+  if (target.kind === 'last') {
+    const st = recentStrangers.find((r) => r.peerId === target.peerId);
+    payload.peerId = target.peerId;
+    if (visual && st) payload.verdict = await verdictFor(st.frames);
+    wsSend({ type: 'report-last', ...payload });
+    show(els.reportLast, false);
+  } else {
+    const entry = peers.get(target);
+    if (visual && entry) payload.verdict = await verdictFor(entry.frames);
+    wsSend({ type: 'report', to: target, ...payload });
     clearChat(); setSearchReason('searching'); phase = 'searching'; render();
   }
-  closeReport();
 });
 
 // --- Age / rules gate -----------------------------------------------------

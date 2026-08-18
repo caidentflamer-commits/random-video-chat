@@ -45,7 +45,9 @@ people together with a friend — or with a stranger you both chose to keep, via
   — the ref is stamped onto `profiles.referred_by` at sign-in, set once, never
   overwritten, and payouts read straight from Supabase, so a deploy can't erase
   who is owed what. Conversions ping the Discord webhook (💸) and the `REFERRAL`
-  log line. The Creators table lives on `/admin/stats`. Ref survives the visit →
+  log line. Per-creator clicks and payouts are in `/admin/stats` JSON under
+  `referrals` (the rendered Creators table went with the HTML pages).
+  Ref survives the visit →
   sign-in → subscribe round trip via localStorage; the `?r=` param is stripped
   from the URL (hash untouched — party invites and Supabase ride there); same
   bot filter as visits. **⚠ INERT until this SQL runs in Supabase → SQL Editor:**
@@ -159,8 +161,8 @@ people together with a friend — or with a stranger you both chose to keep, via
   the client reports only what happens in the browser (`gate`, `mediaOk`,
   `mediaFail`, `playBlocked`) via a `stat` message on the existing socket, against
   a fixed whitelist.
-  **Read it at `GET /admin/stats?key=ADMIN_KEY`** — a rendered page (funnel,
-  cards, and a banded verdict on the failure rate), or `&format=json` for curl.
+  **Read it with `/stats` in Discord**, or `GET /admin/stats?key=ADMIN_KEY` for
+  the raw JSON. The rendered page this used to serve is gone — see `DISCORD.md`.
   Same gate as `/admin/reports`. `ADMIN_KEY` **is set on Render** (2026-08-09).
   Without that key you still get an **hourly `STATS {...}` rollup in the Render
   logs**, which is also the only history: the counters live in memory and reset on
@@ -226,12 +228,160 @@ Set: `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SECRET_KEY`,
 `SUPABASE_JWKS_URL`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`,
 `STRIPE_PAYMENT_LINK`, `REPORT_WEBHOOK_URL`.
 Not set: `STRIPE_UNBAN_LINK` (paid unban stays invisible until it is).
+Not set yet: `DISCORD_BOT_TOKEN`, `DISCORD_CHANNEL_ID`, `DISCORD_PUBLIC_KEY`,
+`DISCORD_ADMIN_IDS`, `DISCORD_APP_ID` — the admin surface is inert until they are.
+See `DISCORD.md`. Optional: `TRUSTED_PROXY_HOPS` (defaults to 1).
 `TURN_KEY_ID` + `TURN_KEY_API_TOKEN` **are** set (Cloudflare TURN live
 2026-08-10). `ADMIN_KEY` **is** set (2026-08-09).
 (`SUPPORT_URL` is **not** an env var — it's a constant at the top of
 `index.html`; the server never reads it.)
 The server accepts either the new (`SUPABASE_PUBLISHABLE_KEY`/`SECRET_KEY`) or
 classic (`ANON_KEY`/`SERVICE_KEY`) names.
+
+## Abuse hardening (2026-08-17)
+
+None of this was a break-in risk — no injection, no exposed keys, no path
+traversal (all checked). The exposure was **abuse and availability**, which is
+the right threat model for an anonymous video-chat site anyway.
+
+- **A report no longer bans on its own without limit.** It used to: one report
+  → instant, durable, IP-wide ban. A script running search → match → report →
+  next could burn a genuine user every few seconds, and since the only way back
+  in is the paid unban link, the griefing came with a price tag attached.
+  Now `mayBan()` gates it — `REPORTER_BAN_BUDGET` (5/hour per reporter IP) plus
+  a site-wide breaker at `GLOBAL_BAN_BUDGET` (30/hour) that pings the Discord
+  webhook when it trips. **Both throttle the ban, never the report**: a
+  throttled report is still logged, still webhooked, still in `/admin/reports`
+  (action reads `NOT banned — <reason>`), and the reporter still gets their
+  ack and still leaves the room. Verified over the wire: 5 bans land, the next
+  3 are refused, all 8 appear in the audit trail.
+- **`getClientIp` reads the X-Forwarded-For chain from the right, not the
+  left.** Proxies append, so `[0]` was whatever the *client* sent — a header
+  bought free ban evasion and, because bans are keyed on IP, the ability to get
+  an innocent address banned by claiming to be it. `TRUSTED_PROXY_HOPS`
+  (default 1) sets how far in from the right to read. **Check it on the real
+  host** with `/admin/whoami?key=ADMIN_KEY` — open it from a phone on cell data
+  and confirm `clientIp` is that phone’s public address. Every ban depends on
+  this being right.
+- **Flood control on the socket.** `maxPayload: 64 KB` (ws defaults to 100 MB
+  per frame), 8 concurrent sockets per IP, 40 connections/minute per IP, and a
+  per-socket token bucket (400 burst, 40/sec) sized for a 4-way mesh trickling
+  ICE across three peer connections. A 300-message burst survives; 600 gets the
+  socket closed with 1008.
+- **Socket `error` handlers — this one was already a live crash.** In Node an
+  `error` event with no listener is rethrown and kills the process, and `ws`
+  emits those on the socket. One oversized frame or abrupt reset from a single
+  visitor took the whole site down. Adding `maxPayload` made it trivial to
+  trigger, which is how it surfaced; `socket.on('error')`, `wss.on('error')`
+  and `server.on('clientError')` now cover it.
+- **Security headers on every response** (`setSecurityHeaders`). The real prize
+  is `frame-ancestors 'none'` — nobody gets to wrap a camera prompt in their
+  own page. The CSP needs `'unsafe-inline'` (the app is one inline `<script>`)
+  and `'unsafe-eval'` (TensorFlow.js), so **it is not an XSS backstop** — it
+  buys the frame rule, `object-src`, `base-uri`, and a fixed allowlist of
+  script hosts. If you add an external asset, add its origin here or it will
+  be blocked: jsdelivr (scripts), Google Fonts (`@import` in `clarity.css` —
+  googleapis for the stylesheet, gstatic for the files), `*.supabase.co`.
+
+## Report system rework (2026-08-17)
+
+**No report bans anyone by itself any more.** The old rule was one report →
+instant, durable, IP-wide ban, with a paid unban link as the only way back.
+Now a ban needs a *visual* reason AND a positive classification of frames the
+reporter’s own browser already sampled. Everything else queues for a human.
+
+- **`confirmedExplicit()` in `server.js` is the gate.** Visual reasons are
+  `VISUAL_REASONS` (currently just Nudity) plus anything prefixed `auto:`.
+  A visual reason with `verdict.explicit === true` can ban; a clean verdict, a
+  missing verdict, or any non-visual reason goes to `queueReview()` instead.
+  The `auto:` prefix on its own proves nothing — it is a string anyone can
+  type down the socket, which is why the verdict, not the label, is what
+  counts. Then `mayBan()`’s budgets still apply on top.
+- **The verdict is client-supplied and that is unavoidable.** This is a P2P
+  mesh with no SFU — not one video frame ever reaches the server, so there is
+  nothing here to verify against. The verdict raises the bar a long way past
+  one click; the rate budgets are what stop someone forging it wholesale.
+  `sanitizeVerdict()` clamps what arrives before it is ever stored or shown.
+- **Frames never leave the browser.** `retainFrame()` keeps the last
+  `RETAINED_FRAMES` (3) sampled canvases per peer, and `rememberStranger()`
+  carries them for up to `RECENT_STRANGER_MS` (30 s) after the person is gone.
+  In memory, in that tab, gone when it closes. Only numbers are transmitted.
+  **Do not "improve" this by uploading thumbnails to the review queue** — that
+  turns Olumie into a service storing images of strangers, frequently nude and
+  occasionally minors, with the legal duties that attach to holding them.
+- **`report-last` reports ONE person.** It used to ban everyone from the last
+  30 seconds, so a fast skipper took bystanders down with a single tap. The
+  flag now opens `openPicker()` — thumbnails of the last few strangers from
+  retained frames — and only the person picked is reported. `lastOpponents`
+  on the server carries a `peerId` so the pick maps to exactly one IP.
+- **Review queue: a card in Discord** with Ban / Dismiss on it (`DISCORD.md`),
+  or `GET /admin/review?key=ADMIN_KEY` for the same list as JSON. Every report
+  that did not earn a ban waits there with its reason, note, scores and target
+  IP — no images. `POST /admin/review/act` is the curl equivalent of the
+  buttons and stays a POST, so a prefetch or an `<img>` tag cannot fire it.
+
+### The model was silently blind, twice over
+
+Worth reading before touching `initModeration()`.
+
+1. `nsfwjs.load()` with no argument fetched a CloudFront bucket that no longer
+   resolves at all, so load threw, the catch set `moderationState = 'off'`, and
+   camera moderation had been failing open in production. Fixed by pinning
+   `NSFW_MODEL_URL` to a jsdelivr copy (already inside the CSP allowlist).
+2. Worse: with that URL restored on **tfjs 3.21**, the model loaded, reported
+   itself healthy, and returned the *same five numbers for every image* — grey,
+   random noise, stripes, all identical. Not a harness artifact: Chrome 148,
+   RTX 4070, WebGL2, weights intact, `matMul`/`conv2d` correct. The same model
+   on the CPU backend classified fine. **tfjs 4.22 + nsfwjs 4.2.1 fixes it** and
+   runs at ~12 ms a frame on WebGL.
+
+So `initModeration()` now runs `backendSeesImages()` — two images no working
+classifier could score identically — and only reports `on` if the scores differ.
+If WebGL lies it retries on CPU; if that also fails, moderation stays honestly
+`off`. Costs ~25 ms once. **Never delete this check**: a detector that says it
+is running while seeing nothing is worse than one that admits it is off.
+
+### Admin lives in Discord, not a browser
+
+**Read `DISCORD.md`.** Every HTML admin page is gone — 385 lines of
+`statsPage`, `adminPage` and `reviewPage` deleted. A report that needs a human
+arrives in the Discord channel as a card with **Ban this IP** / **Dismiss** on
+it; `/stats`, `/queue` and `/whoami` are slash commands. Acting on a report is
+a notification and a tap, with no browser in it anywhere.
+
+It had to be a **bot**, not the existing `REPORT_WEBHOOK_URL`: Discord ignores
+the `components` field on any webhook that is not application-owned, so buttons
+are impossible over a plain channel webhook. The webhook still carries the
+plain pings, and still carries queued reports whenever the bot is unconfigured,
+so nothing goes quiet mid-setup.
+
+Interactions are verified by ed25519 signature over the **raw** body
+(`discordSignatureOk`) — Node does this natively once the raw 32-byte key is
+wrapped in an SPKI DER header, no library needed. Bad or missing signature is a
+401, which is also how Discord validates the endpoint when you save it.
+
+`DISCORD_ADMIN_IDS` decides who may press a button. **Unset means nobody**,
+deliberately — seeing the channel is not the same as being allowed to ban, and
+the failure everyone regrets is the open one.
+
+Both surfaces share `decideReview()`, so a button press and a curl to
+`POST /admin/review/act` do exactly the same thing. Everything under `/admin`
+is now JSON and takes either `?key=` or an `X-Admin-Key` header.
+
+### Known, not fixed
+
+- **`@supabase/supabase-js@2` is an unpinned CDN tag.** Whatever jsdelivr
+  resolves `@2` to runs on the site with full access to the page. Pin the exact
+  version and add an SRI hash.
+- **`ADMIN_KEY` in a query string is now opt-in, not forced.** `/admin` uses a
+  header, so normal use never puts the key in a URL. The `?key=` form still
+  works on every endpoint for curl and old bookmarks — and still lands in
+  access logs and Referer headers when you use it.
+- **The review queue is in memory** (`MAX_REVIEW` 500) and empties on deploy.
+  Reports themselves are durable in Supabase via `dbInsertReport`; the pending
+  decisions are not. If a deploy lands mid-triage, the queue is gone.
+- **Only Nudity is a visual reason.** Under 18 is the one that most deserves
+  automation and least admits it — no classifier here estimates age.
 
 ## Current status
 
