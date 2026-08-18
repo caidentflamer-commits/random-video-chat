@@ -45,7 +45,9 @@ people together with a friend — or with a stranger you both chose to keep, via
   — the ref is stamped onto `profiles.referred_by` at sign-in, set once, never
   overwritten, and payouts read straight from Supabase, so a deploy can't erase
   who is owed what. Conversions ping the Discord webhook (💸) and the `REFERRAL`
-  log line. The Creators table lives on `/admin/stats`. Ref survives the visit →
+  log line. Per-creator clicks and payouts are in `/admin/stats` JSON under
+  `referrals` (the rendered Creators table went with the HTML pages).
+  Ref survives the visit →
   sign-in → subscribe round trip via localStorage; the `?r=` param is stripped
   from the URL (hash untouched — party invites and Supabase ride there); same
   bot filter as visits. **⚠ INERT until this SQL runs in Supabase → SQL Editor:**
@@ -159,8 +161,8 @@ people together with a friend — or with a stranger you both chose to keep, via
   the client reports only what happens in the browser (`gate`, `mediaOk`,
   `mediaFail`, `playBlocked`) via a `stat` message on the existing socket, against
   a fixed whitelist.
-  **Read it at `GET /admin/stats?key=ADMIN_KEY`** — a rendered page (funnel,
-  cards, and a banded verdict on the failure rate), or `&format=json` for curl.
+  **Read it with `/stats` in Discord**, or `GET /admin/stats?key=ADMIN_KEY` for
+  the raw JSON. The rendered page this used to serve is gone — see `DISCORD.md`.
   Same gate as `/admin/reports`. `ADMIN_KEY` **is set on Render** (2026-08-09).
   Without that key you still get an **hourly `STATS {...}` rollup in the Render
   logs**, which is also the only history: the counters live in memory and reset on
@@ -226,6 +228,9 @@ Set: `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SECRET_KEY`,
 `SUPABASE_JWKS_URL`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`,
 `STRIPE_PAYMENT_LINK`, `REPORT_WEBHOOK_URL`.
 Not set: `STRIPE_UNBAN_LINK` (paid unban stays invisible until it is).
+Not set yet: `DISCORD_BOT_TOKEN`, `DISCORD_CHANNEL_ID`, `DISCORD_PUBLIC_KEY`,
+`DISCORD_ADMIN_IDS`, `DISCORD_APP_ID` — the admin surface is inert until they are.
+See `DISCORD.md`. Optional: `TRUSTED_PROXY_HOPS` (defaults to 1).
 `TURN_KEY_ID` + `TURN_KEY_API_TOKEN` **are** set (Cloudflare TURN live
 2026-08-10). `ADMIN_KEY` **is** set (2026-08-09).
 (`SUPPORT_URL` is **not** an env var — it's a constant at the top of
@@ -309,12 +314,11 @@ reporter’s own browser already sampled. Everything else queues for a human.
   flag now opens `openPicker()` — thumbnails of the last few strangers from
   retained frames — and only the person picked is reported. `lastOpponents`
   on the server carries a `peerId` so the pick maps to exactly one IP.
-- **Review queue: `/admin/review?key=ADMIN_KEY`** (add `&format=json` for the
-  raw list). Every report that did not earn a ban waits there with its reason,
-  note, scores and target IP — no images. Ban or dismiss from the page; the
-  action is a POST, so a prefetch or an `<img>` tag cannot fire it. Reasons and
-  notes are stranger-typed text rendered into HTML, so they go through `esc()`
-  — verified with a hostile note containing `<img onerror>` and `<script>`.
+- **Review queue: a card in Discord** with Ban / Dismiss on it (`DISCORD.md`),
+  or `GET /admin/review?key=ADMIN_KEY` for the same list as JSON. Every report
+  that did not earn a ban waits there with its reason, note, scores and target
+  IP — no images. `POST /admin/review/act` is the curl equivalent of the
+  buttons and stays a POST, so a prefetch or an `<img>` tag cannot fire it.
 
 ### The model was silently blind, twice over
 
@@ -337,32 +341,32 @@ If WebGL lies it retries on CPU; if that also fails, moderation stays honestly
 `off`. Costs ~25 ms once. **Never delete this check**: a detector that says it
 is running while seeing nothing is worse than one that admits it is off.
 
-### One admin surface: `/admin`
+### Admin lives in Discord, not a browser
 
-`olumie.chat/admin` is the only one worth bookmarking. Review queue (with a
-count badge), stats, recent reports, and the connection check, in four tabs
-off a single `/admin/data` request — one round trip, so a phone on a bad
-signal is not making four. Refreshes every 20s and on refocus.
+**Read `DISCORD.md`.** Every HTML admin page is gone — 385 lines of
+`statsPage`, `adminPage` and `reviewPage` deleted. A report that needs a human
+arrives in the Discord channel as a card with **Ban this IP** / **Dismiss** on
+it; `/stats`, `/queue` and `/whoami` are slash commands. Acting on a report is
+a notification and a tap, with no browser in it anywhere.
 
-The shell carries **no data**, so it loads without a key; the key is typed
-once, kept in `localStorage`, and sent as an **`X-Admin-Key` header** on every
-fetch. So ADMIN_KEY stops appearing in URLs — no more leaking into access logs,
-Referer headers, browser history or a screen-shared address bar. `adminKeyOk()`
-accepts either form, so every existing `?key=` link and doc still works.
+It had to be a **bot**, not the existing `REPORT_WEBHOOK_URL`: Discord ignores
+the `components` field on any webhook that is not application-owned, so buttons
+are impossible over a plain channel webhook. The webhook still carries the
+plain pings, and still carries queued reports whenever the bot is unconfigured,
+so nothing goes quiet mid-setup.
 
-Built mobile-first on purpose — this gets opened one-handed off a Discord ping.
-Add it to the home screen and it behaves like an app.
+Interactions are verified by ed25519 signature over the **raw** body
+(`discordSignatureOk`) — Node does this natively once the raw 32-byte key is
+wrapped in an SPKI DER header, no library needed. Bad or missing signature is a
+401, which is also how Discord validates the endpoint when you save it.
 
-**Trap for whoever edits `adminPage()` next:** the page is a template literal
-inside `server.js`, so a `\'` in your HTML is eaten by the template and the
-browser receives a bare apostrophe — which, inside a single-quoted JS string,
-kills the *entire* inline script with no console error and a blank page. It
-already happened once. Avoid apostrophes in that literal rather than escaping
-them twice, and sanity-check with:
+`DISCORD_ADMIN_IDS` decides who may press a button. **Unset means nobody**,
+deliberately — seeing the channel is not the same as being allowed to ban, and
+the failure everyone regrets is the open one.
 
-```bash
-curl -s localhost:3000/admin | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{new Function(d.match(/<script>([\\s\\S]*?)<\\/script>/)[1]);console.log('parses OK')})"
-```
+Both surfaces share `decideReview()`, so a button press and a curl to
+`POST /admin/review/act` do exactly the same thing. Everything under `/admin`
+is now JSON and takes either `?key=` or an `X-Admin-Key` header.
 
 ### Known, not fixed
 

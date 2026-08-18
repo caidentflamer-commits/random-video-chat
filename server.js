@@ -373,6 +373,71 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // Discord interactions. Every button press and slash command lands here.
+  if (req.method === 'POST' && urlPath === '/discord/interactions') {
+    const chunks = [];
+    req.on('data', (c) => { chunks.push(c); if (chunks.length > 200) req.destroy(); });
+    req.on('end', () => {
+      const raw = Buffer.concat(chunks);
+      // 401 specifically — Discord disables an endpoint that doesn't reject
+      // its deliberately-bad probe requests.
+      if (!discordSignatureOk(req, raw)) { res.writeHead(401); return res.end('invalid request signature'); }
+      let body = {};
+      try { body = JSON.parse(raw.toString() || '{}'); } catch {}
+      const reply = (payload) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(payload));
+      };
+      const EPHEMERAL = 64;
+      const say = (content) => reply({ type: 4, data: { content, flags: EPHEMERAL } });
+
+      if (body.type === 1) return reply({ type: 1 });                        // PING
+
+      const user = (body.member && body.member.user) || body.user || {};
+      const allowed = discordAdminIds();
+      if (!allowed.length) return say('DISCORD_ADMIN_IDS is not set, so nobody is allowed to act. Set it to your Discord user ID on Render.');
+      if (!allowed.includes(String(user.id))) return say('You are not on the admin list for this app.');
+
+      if (body.type === 3) {                                                 // MESSAGE_COMPONENT
+        const [scope, action, id] = String((body.data && body.data.custom_id) || '').split(':');
+        if (scope !== 'review') return say('Unknown button.');
+        const out = decideReview(id, action, user.username || user.id);
+        const original = (body.message && body.message.embeds && body.message.embeds[0]) || {};
+        // Edit the card in place and drop the buttons, so the channel shows
+        // what was decided instead of a stale pair of tempting buttons.
+        return reply({
+          type: 7,
+          data: {
+            embeds: [{ ...original, color: out.ok && action === 'ban' ? 0x7f1d1d : 0x2b2f3a,
+              footer: { text: `${out.text} — by ${user.username || user.id}` } }],
+            components: [],
+          },
+        });
+      }
+
+      if (body.type === 2) {                                                 // APPLICATION_COMMAND
+        const name = (body.data && body.data.name) || '';
+        if (name === 'stats') return say(discordStatsText());
+        if (name === 'queue') {
+          const open = reviewQueue.filter((r) => r.status === 'open').slice().reverse();
+          if (!open.length) return say('Queue is empty.');
+          // Re-post the oldest few as fresh cards so they can be acted on here.
+          open.slice(0, 5).reverse().forEach((it) => discordSend(body.channel_id, reviewCard(it)));
+          return say(`${open.length} waiting — reposting the ${Math.min(5, open.length)} most recent as cards.`);
+        }
+        if (name === 'whoami') {
+          return say([
+            'What the server thinks your address is — every ban is keyed on this.',
+            `\`\`\`json\n${JSON.stringify({ trustedProxyHops: TRUSTED_PROXY_HOPS, note: 'open /admin/whoami?key=… from a phone on cell data to check a real client IP' }, null, 2)}\n\`\`\``,
+          ].join('\n'));
+        }
+        return say('Unknown command.');
+      }
+      return reply({ type: 4, data: { content: 'Unhandled interaction type.', flags: EPHEMERAL } });
+    });
+    return;
+  }
+
   // Stripe customer portal — lets a subscriber cancel or update their card
   // themselves. Without it the only exits are emailing us or filing a dispute,
   // and dispute rate is what gets a high-risk merchant terminated.
@@ -471,15 +536,18 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // One place for all of it. The shell carries no data, so it needs no key to
-  // load; the key is typed once, kept in localStorage, and sent as a header on
-  // every fetch below. The individual endpoints all still work on their own.
+  // There is no admin web page any more — Discord is the control surface, and
+  // a report arrives there as a card with Ban / Dismiss on it. What is left
+  // under /admin is JSON, for curl and for anything scripted.
   if (urlPath === '/admin' || urlPath === '/admin/') {
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
-    return res.end(adminPage());
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    return res.end(JSON.stringify({
+      surface: 'Discord — see DISCORD.md. Buttons on each queued report; /stats and /queue as slash commands.',
+      json: ['/admin/data', '/admin/stats', '/admin/review', '/admin/reports', '/admin/whoami'],
+      note: 'All take ?key=ADMIN_KEY or an X-Admin-Key header.',
+    }, null, 2));
   }
-  // Everything the hub shows, in one round trip — so a phone on a bad
-  // connection makes one request, not four.
+  // Everything in one round trip, for when you do want to look at raw numbers.
   if (urlPath === '/admin/data') {
     const q = new URLSearchParams((req.url.split('?')[1] || ''));
     if (!adminKeyOk(req, q)) { res.writeHead(403); return res.end('Forbidden'); }
@@ -506,9 +574,9 @@ const server = http.createServer((req, res) => {
     });
   }
 
-  // The review queue. Everything that did not earn an automatic ban waits here
-  // for a decision. Acting on an entry is a POST so it can't be fired by a
-  // prefetch, a link preview, or an <img> someone drops in a chat.
+  // The review queue as JSON, plus the POST that acts on an entry. The Discord
+  // buttons are the normal way in; this is the same decision by curl. It stays a
+  // POST so no prefetch, link preview or <img> in a chat can fire it.
   if (urlPath === '/admin/review' || urlPath === '/admin/review/act') {
     const q = new URLSearchParams((req.url.split('?')[1] || ''));
     if (!adminKeyOk(req, q)) { res.writeHead(403); return res.end('Forbidden'); }
@@ -519,31 +587,16 @@ const server = http.createServer((req, res) => {
       req.on('end', () => {
         let body = {};
         try { body = JSON.parse(Buffer.concat(chunks).toString() || '{}'); } catch {}
-        const item = reviewQueue.find((r) => r.id === Number(body.id));
-        if (!item || item.status !== 'open') { res.writeHead(404, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ error: 'not found or already decided' })); }
-        if (body.action === 'ban') {
-          item.status = 'banned';
-          bannedIps.add(item.targetIp);
-          dbInsertBan(item.targetIp, `review #${item.id}: ${item.reason || 'manual'}`);
-          wss.clients.forEach((c) => { if (c.ip === item.targetIp && c.readyState === c.OPEN) banSocket(c); });
-          console.log(`REVIEW-ACT ban #${item.id} ${item.targetIp}`);
-        } else if (body.action === 'dismiss') {
-          item.status = 'dismissed';
-          console.log(`REVIEW-ACT dismiss #${item.id}`);
-        } else { res.writeHead(400, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ error: 'action must be ban or dismiss' })); }
-        item.decidedAt = new Date().toISOString();
+        const out = decideReview(body.id, body.action, 'curl');
+        if (!out.ok) { res.writeHead(400, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ error: out.text })); }
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true, id: item.id, status: item.status }));
+        res.end(JSON.stringify({ ok: true, id: out.item.id, status: out.item.status }));
       });
       return;
     }
     const open = reviewQueue.filter((r) => r.status === 'open').slice().reverse();
-    if (q.get('format') === 'json') {
-      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-      return res.end(JSON.stringify({ open: open.length, total: reviewQueue.length, items: open }, null, 2));
-    }
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
-    return res.end(reviewPage(open, q.get('key')));
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    return res.end(JSON.stringify({ open: open.length, total: reviewQueue.length, items: open }, null, 2));
   }
 
   // One-hit check that TRUSTED_PROXY_HOPS matches whatever is in front of us:
@@ -577,12 +630,8 @@ const server = http.createServer((req, res) => {
       });
       // HTML by default (this gets opened in a browser); JSON on request so
       // curl and anything scripted keeps working exactly as before.
-      if (q.get('format') === 'json') {
-        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-        return res.end(JSON.stringify(summary, null, 2));
-      }
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
-      return res.end(statsPage(summary));
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      return res.end(JSON.stringify(summary, null, 2));
     });
   }
 
@@ -850,388 +899,120 @@ function statsSummary() {
 // counters live in memory and reset on deploy. Render keeps logs 7 days.
 setInterval(() => { console.log('STATS ' + JSON.stringify(statsSummary())); }, 60 * 60 * 1000);
 
-// ---- the numbers page -----------------------------------------------------
-// Reuses clarity.css and the app's own dark tokens so it looks like the product
-// rather than a debug dump. JSON is still there at ?format=json for curl.
-function humanUptime(sinceIso) {
-  const ms = Date.now() - new Date(sinceIso).getTime();
-  const m = Math.floor(ms / 60000), h = Math.floor(m / 60), d = Math.floor(h / 24);
-  if (d) return `${d}d ${h % 24}h`;
-  if (h) return `${h}h ${m % 60}m`;
-  return `${m}m`;
+// ---- Discord control surface ----------------------------------------------
+// The admin surface is Discord, not a web page. A queued report arrives as a
+// card with Ban / Dismiss on it, so acting on one is a notification and a tap.
+//
+// It has to be a BOT, not the old incoming webhook: Discord only lets
+// application-owned senders attach interactive components — a plain channel
+// webhook has its `components` field ignored outright. Inert until
+// DISCORD_BOT_TOKEN and DISCORD_CHANNEL_ID are set, like everything else here;
+// REPORT_WEBHOOK_URL still works and is still used for the plain pings.
+const DISCORD_API = 'https://discord.com/api/v10';
+const discordReady = () => !!(process.env.DISCORD_BOT_TOKEN && process.env.DISCORD_CHANNEL_ID);
+// Who is allowed to press the buttons. Anyone can SEE the channel; that is not
+// the same as being allowed to ban someone. Unset means nobody — fail closed,
+// because the alternative is every member of the server holding the ban hammer.
+function discordAdminIds() {
+  return String(process.env.DISCORD_ADMIN_IDS || '').split(',').map((x) => x.trim()).filter(Boolean);
 }
-// A rate is only meaningful once there's enough of it to mean anything; below
-// that this says "too early" rather than dressing up noise as a finding.
-function verdictForFailRate(rate, sample) {
-  if (rate === null || sample < 10) return { tone: 'idle', line: 'Not enough connections yet to read this.' };
-  if (rate === 0) return { tone: 'good', line: 'Every connection got through. No relay needed so far.' };
-  if (rate < 5) return { tone: 'good', line: 'Normal. A few failures are expected without a relay.' };
-  if (rate < 15) return { tone: 'warn', line: 'Worth watching. Around this level, TURN starts paying for itself.' };
-  return { tone: 'bad', line: 'High. This is the case TURN exists for — see TURN.md.' };
+
+async function discordSend(channelId, payload) {
+  if (!process.env.DISCORD_BOT_TOKEN) return null;
+  try {
+    const r = await fetch(`${DISCORD_API}/channels/${channelId}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bot ${process.env.DISCORD_BOT_TOKEN}` },
+      body: JSON.stringify(payload),
+    });
+    if (!r.ok) console.error(`discord send failed ${r.status}: ${(await r.text()).slice(0, 200)}`);
+    return r.ok;
+  } catch (e) { console.error('discord send error:', e && e.message); return false; }
 }
-function statsPage(s) {
-  const n = (v) => (v === null || v === undefined ? '—' : v.toLocaleString('en-US'));
-  const pctText = (v) => (v === null ? '—' : v + '%');
-  const mediaTotal = s.mediaOk + s.mediaFail;
-  const verdict = verdictForFailRate(s.mediaFailRate, mediaTotal);
-  // Funnel bars are scaled to the widest step so the drop-off is visible at a
-  // glance; without that, everything after step one is a sliver.
-  const steps = [
-    { label: 'Page loads', value: s.visits, note: 'reloads counted again' },
-    { label: 'Browsers', value: s.people, note: 'not humans — see below' },
-    { label: 'Pressed Start', value: s.starts, note: pctText(s.startRate) + ' of browsers' },
-    { label: 'Got matched', value: s.sessions * 2, note: pctText(s.matchRate) + ' of starts' },
-    { label: 'Stayed together', value: s.teamups, note: pctText(s.teamUpRate) + ' of matches' },
+
+// One card per queued report. custom_id carries the decision and the item id —
+// that is all the state a button needs, so a redeploy doesn't orphan the
+// buttons already sitting in the channel.
+function reviewCard(item) {
+  const v = item.verdict;
+  const lines = [
+    `**Target** \`${item.targetIp}\`  ·  **Reporter** \`${item.reporterIp}\``,
+    `**Why it's here** ${item.why || 'n/a'}`,
+    v ? `**Verdict** ${v.frames} frame(s) · ${Object.entries(v.scores).map(([k, n]) => `${k} ${n}`).join(' · ')}`
+      : '**Verdict** none — judge on the report alone',
   ];
-  const widest = Math.max(1, ...steps.map((x) => x.value));
-  const bars = steps.map((x) => `
-    <div class="step">
-      <div class="step-head"><span class="step-label">${x.label}</span><span class="step-value">${n(x.value)}</span></div>
-      <div class="track"><div class="fill" style="width:${Math.max(1.5, (x.value / widest) * 100)}%"></div></div>
-      <div class="step-note">${x.note}</div>
-    </div>`).join('');
-
-  return `<!DOCTYPE html>
-<html lang="en"><head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<meta name="robots" content="noindex, nofollow" />
-<title>Olumie · numbers</title>
-<link rel="stylesheet" href="/clarity.css" />
-<style>
-  body { --primary:#6d63ff; --online:#3fcf6b; --danger:#fb5f7a; --warning:#f0a92e;
-         margin:0; min-height:100vh; padding:28px var(--gutter) 56px; font-family:var(--font-display); }
-  .wrap { max-width:960px; margin:0 auto; }
-  header { display:flex; align-items:baseline; justify-content:space-between; gap:16px; flex-wrap:wrap; margin-bottom:24px; }
-  h1 { font-size:var(--fs-xl); margin:0; letter-spacing:-0.02em; }
-  .sub { color:var(--text-muted); font-size:var(--fs-sm); }
-  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:12px; margin-bottom:28px; }
-  .card { background:var(--surface); border:1px solid var(--border); border-radius:var(--r-lg); padding:16px 18px; }
-  .card .k { font-size:var(--fs-xs); color:var(--text-muted); text-transform:uppercase; letter-spacing:.08em; }
-  .card .v { font-size:var(--fs-2xl); font-weight:var(--fw-bold); line-height:1.1; margin-top:6px; letter-spacing:-0.03em; }
-  .card .foot { font-size:var(--fs-xs); color:var(--text-subtle); margin-top:4px; }
-  h2 { font-size:var(--fs-md); margin:0 0 12px; }
-  .panel { background:var(--surface); border:1px solid var(--border); border-radius:var(--r-lg); padding:18px 20px; margin-bottom:28px; }
-  .step { margin-bottom:14px; }
-  .step:last-child { margin-bottom:0; }
-  .step-head { display:flex; justify-content:space-between; align-items:baseline; font-size:var(--fs-sm); }
-  .step-value { font-weight:var(--fw-bold); font-variant-numeric:tabular-nums; }
-  .track { height:8px; background:var(--surface-2); border-radius:var(--r-pill); overflow:hidden; margin-top:6px; }
-  .fill { height:100%; background:var(--primary); border-radius:var(--r-pill); }
-  .step-note { font-size:var(--fs-xs); color:var(--text-subtle); margin-top:4px; }
-  .verdict { border-radius:var(--r-lg); padding:18px 20px; border:1px solid; margin-bottom:28px; }
-  .verdict .rate { font-size:var(--fs-3xl); font-weight:var(--fw-bold); letter-spacing:-0.04em; line-height:1; }
-  .verdict .line { margin-top:8px; font-size:var(--fs-sm); }
-  .verdict .meta { margin-top:6px; font-size:var(--fs-xs); opacity:.75; }
-  .good { border-color:var(--online); background:var(--online-tint); color:var(--online); }
-  .warn { border-color:var(--warning); background:var(--warning-tint); color:var(--warning); }
-  .bad  { border-color:var(--danger); background:var(--danger-tint); color:var(--danger); }
-  .idle { border-color:var(--border); background:var(--surface); color:var(--text-muted); }
-  footer { color:var(--text-subtle); font-size:var(--fs-xs); line-height:1.7; border-top:1px solid var(--border); padding-top:16px; }
-  footer strong { color:var(--text-muted); }
-  a { color:var(--primary); }
-  .dot { width:8px; height:8px; border-radius:50%; background:var(--online); display:inline-block; margin-right:6px; }
-</style></head>
-<body class="c-root c-stage"><div class="wrap">
-
-<header>
-  <div>
-    <h1>Olumie · numbers</h1>
-    <div class="sub"><span class="dot"></span>${n(s.online)} online now · counting for ${humanUptime(s.since)}</div>
-  </div>
-  <div class="sub">Refreshes every 30s · <a href="?format=json">JSON</a></div>
-</header>
-
-<div class="grid">
-  <div class="card"><div class="k">Browsers</div><div class="v">${n(s.people)}</div><div class="foot">${n(s.returning)} came back · ${pctText(s.returnRate)}</div></div>
-  <div class="card"><div class="k">Conversations</div><div class="v">${n(s.sessions)}</div><div class="foot">${n(s.teamups)} became parties</div></div>
-  <div class="card"><div class="k">Peak online</div><div class="v">${n(s.peakOnline)}</div><div class="foot">at once, since last deploy</div></div>
-  <div class="card"><div class="k">Reports</div><div class="v">${n(s.reports)}</div><div class="foot">${n(s.bans)} bans issued · ${n(s.unbans)} paid unbans</div></div>
-</div>
-
-<h2>Where people drop off</h2>
-<div class="panel">${bars}</div>
-
-<h2>Connection health</h2>
-<div class="verdict ${verdict.tone}">
-  <div class="rate">${verdict.tone === 'idle' ? '—' : pctText(s.mediaFailRate)}</div>
-  <div class="line">${verdict.line}</div>
-  <div class="meta">${n(s.mediaFail)} failed of ${n(mediaTotal)} attempts · ${n(s.playBlocked)} blocked by autoplay (not a network fault)</div>
-</div>
-${Object.keys(s.referrals || {}).length ? `
-<h2>Creators</h2>
-<div class="panel">
-  <table style="width:100%;border-collapse:collapse;font-size:var(--fs-sm)">
-    <tr style="color:var(--text-muted);text-align:left">
-      <th style="padding:6px 0;font-weight:500">creator</th>
-      <th style="font-weight:500">clicks*</th>
-      <th style="font-weight:500">accounts</th>
-      <th style="font-weight:500">paying now</th>
-    </tr>
-    ${Object.entries(s.referrals).sort((a, b) => (b[1].paying || 0) - (a[1].paying || 0)).map(([r, v]) => `
-    <tr style="border-top:1px solid var(--border)">
-      <td style="padding:8px 0;font-family:var(--font-mono)">${r}</td>
-      <td style="font-variant-numeric:tabular-nums">${n(v.clicks)}</td>
-      <td style="font-variant-numeric:tabular-nums">${n(v.accounts)}</td>
-      <td style="font-variant-numeric:tabular-nums;font-weight:600">${n(v.paying)}</td>
-    </tr>`).join('')}
-  </table>
-  <div class="step-note" style="margin-top:10px">*clicks reset on deploy; accounts and paying-now are durable (Supabase) — payouts read from those. Link format: olumie.chat/?r=name</div>
-</div>` : ''}
-
-<footer>
-  <p><strong>Read these carefully.</strong> “Page loads” counts reloads again.
-  “Browsers” means browsers, not people — one person on a phone and a laptop is two,
-  two people sharing a laptop is one. Private-browsing visitors aren’t counted at all.</p>
-  <p><strong>Everything here resets on deploy</strong>, because the counters live in
-  memory. Counting since ${new Date(s.since).toUTCString()}. For history, the server
-  writes a <code>STATS</code> line to the Render logs every hour (kept 7 days).</p>
-</footer>
-
-</div>
-<script>setTimeout(function () { location.reload(); }, 30000);</script>
-</body></html>`;
+  if (item.note) lines.push(`**Note** ${String(item.note).replace(/`/g, "'").slice(0, 300)}`);
+  return {
+    embeds: [{
+      title: `Review #${item.id} · ${item.reason || 'unspecified'}`,
+      description: lines.join('\n'),
+      color: 0x7f1d1d,
+      timestamp: item.ts,
+    }],
+    components: [{
+      type: 1,
+      components: [
+        { type: 2, style: 4, label: 'Ban this IP', custom_id: `review:ban:${item.id}` },
+        { type: 2, style: 2, label: 'Dismiss', custom_id: `review:dismiss:${item.id}` },
+      ],
+    }],
+  };
 }
 
-// Reasons and notes are typed by strangers and land in an admin page — the one
-// place in this codebase where user text meets HTML.
-function esc(v) {
-  return String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+// Applies a decision from either surface. Returns a line describing what
+// happened so the caller can show it wherever the press came from.
+function decideReview(id, action, who) {
+  const item = reviewQueue.find((r) => r.id === Number(id));
+  if (!item) return { ok: false, text: `#${id} is gone — the queue empties on deploy.` };
+  if (item.status !== 'open') return { ok: false, text: `#${id} was already ${item.status}.` };
+  if (action === 'ban') {
+    item.status = 'banned';
+    // banSocket() is what normally counts a ban, and it only runs for someone
+    // still connected. A decision made from the queue an hour later has nobody
+    // to disconnect, so count it here or the number quietly under-reports.
+    bump('bans');
+    bannedIps.add(item.targetIp);
+    dbInsertBan(item.targetIp, `review #${item.id}: ${item.reason || 'manual'}`);
+    // countIt=false: already counted above, and this is the same ban.
+    wss.clients.forEach((c) => { if (c.ip === item.targetIp && c.readyState === c.OPEN) banSocket(c, false); });
+  } else if (action === 'dismiss') {
+    item.status = 'dismissed';
+  } else return { ok: false, text: 'Unknown action.' };
+  item.decidedAt = new Date().toISOString();
+  item.decidedBy = who || 'admin';
+  console.log(`REVIEW-ACT ${item.status} #${item.id} ${item.targetIp} by ${item.decidedBy}`);
+  return { ok: true, item, text: item.status === 'banned' ? `Banned \`${item.targetIp}\`` : 'Dismissed' };
 }
-// Deliberately mobile-first: this gets opened on a phone, from a Discord ping,
-// usually one-handed. Add it to the home screen and it behaves like an app.
-function adminPage() {
-  return `<!doctype html><html><head><meta charset="utf-8"><title>Olumie admin</title>
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#0f1115">
-<link rel="apple-touch-icon" href="/apple-touch-icon.png">
-<style>
- *{box-sizing:border-box}
- body{font:15px/1.5 system-ui,-apple-system,sans-serif;background:#0f1115;color:#e6e8ec;margin:0;
-      padding:16px 16px calc(24px + env(safe-area-inset-bottom));-webkit-text-size-adjust:100%}
- header{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:14px}
- h1{font-size:19px;margin:0}
- .muted{color:#98a0ae;font-size:13px}
- nav{display:flex;gap:6px;overflow-x:auto;margin:0 -16px 16px;padding:0 16px 4px;-webkit-overflow-scrolling:touch}
- nav button{flex:0 0 auto;font:inherit;font-size:14px;padding:8px 14px;border-radius:999px;border:1px solid #262b36;
-            background:#151922;color:#98a0ae;cursor:pointer}
- nav button.on{background:#e6e8ec;color:#0f1115;border-color:#e6e8ec;font-weight:600}
- .badge{display:inline-block;min-width:19px;padding:0 5px;margin-left:6px;border-radius:999px;background:#7f1d1d;
-        color:#fff;font-size:12px;text-align:center;font-weight:700}
- nav button.on .badge{background:#7f1d1d;color:#fff}
- section{display:none} section.on{display:block}
- .item{border:1px solid #262b36;border-radius:10px;padding:13px;margin:0 0 12px;background:#151922}
- .head{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:5px;font-weight:600}
- .note{margin:8px 0;padding:8px 10px;background:#0f1115;border-radius:6px;white-space:pre-wrap;word-break:break-word}
- .actions{margin-top:10px;display:flex;gap:8px}
- button.act{font:inherit;padding:9px 15px;border-radius:8px;border:1px solid #333a49;background:#1c2230;
-            color:#e6e8ec;cursor:pointer;min-height:40px}
- button.act.ban{background:#7f1d1d;border-color:#a33}
- button.act:disabled{opacity:.45}
- .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px}
- .stat{border:1px solid #262b36;border-radius:10px;padding:11px 13px;background:#151922}
- .stat b{display:block;font-size:22px;font-variant-numeric:tabular-nums}
- .stat span{font-size:12px;color:#98a0ae}
- .empty{padding:34px;text-align:center;color:#98a0ae}
- pre{overflow-x:auto;background:#151922;border:1px solid #262b36;border-radius:10px;padding:12px;font-size:12.5px}
- #gate{max-width:340px;margin:14vh auto 0}
- input{font:inherit;width:100%;padding:11px 13px;border-radius:9px;border:1px solid #333a49;background:#151922;color:#e6e8ec}
-</style></head><body>
 
-<div id="gate" hidden>
-  <h1>Olumie admin</h1>
-  <p class="muted">Admin key. Stored on this device only — it is sent as a header, never in the address bar.</p>
-  <form id="gateForm"><input id="keyInput" type="password" autocomplete="off" placeholder="ADMIN_KEY" autofocus></form>
-  <p class="muted" id="gateErr"></p>
-</div>
-
-<div id="app" hidden>
-  <header>
-    <h1>Olumie admin</h1>
-    <span class="muted" id="updated"></span>
-    <span style="flex:1"></span>
-    <button class="act" id="signout" style="padding:5px 11px;min-height:0;font-size:13px">Forget key</button>
-  </header>
-  <nav>
-    <button data-tab="review" class="on">Review <span class="badge" id="nReview">0</span></button>
-    <button data-tab="stats">Stats</button>
-    <button data-tab="reports">Reports</button>
-    <button data-tab="conn">Connection</button>
-  </nav>
-  <section id="review" class="on"></section>
-  <section id="stats"></section>
-  <section id="reports"></section>
-  <section id="conn"></section>
-</div>
-
-<script>
-var KEY = localStorage.getItem('olumie_admin_key') || '';
-var el = function (id) { return document.getElementById(id); };
-function api(path, opts) {
-  opts = opts || {}; opts.headers = Object.assign({ 'X-Admin-Key': KEY }, opts.headers || {});
-  return fetch(path, opts);
-}
-function showGate(msg) {
-  el('gate').hidden = false; el('app').hidden = true; el('gateErr').textContent = msg || '';
-  el('keyInput').focus();
-}
-el('gateForm').addEventListener('submit', function (e) {
-  e.preventDefault(); KEY = el('keyInput').value.trim(); load(true);
-});
-el('signout').addEventListener('click', function () {
-  localStorage.removeItem('olumie_admin_key'); KEY = ''; showGate('');
-});
-[].forEach.call(document.querySelectorAll('nav button'), function (b) {
-  b.addEventListener('click', function () {
-    [].forEach.call(document.querySelectorAll('nav button'), function (x) { x.classList.remove('on'); });
-    [].forEach.call(document.querySelectorAll('section'), function (x) { x.classList.remove('on'); });
-    b.classList.add('on'); el(b.dataset.tab).classList.add('on');
-  });
-});
-
-// Everything below builds DOM with textContent. Reasons and notes are typed by
-// strangers; none of it goes near innerHTML.
-function row(parent, cls, text) { var d = document.createElement('div'); if (cls) d.className = cls; d.textContent = text; parent.appendChild(d); return d; }
-
-function renderReview(items) {
-  var box = el('review'); box.textContent = '';
-  el('nReview').textContent = items.length;
-  if (!items.length) { row(box, 'empty', 'Nothing waiting.'); return; }
-  items.forEach(function (r) {
-    var it = document.createElement('div'); it.className = 'item';
-    var h = document.createElement('div'); h.className = 'head';
-    row(h, null, '#' + r.id + ' · ' + (r.reason || 'unspecified'));
-    row(h, 'muted', new Date(r.ts).toLocaleString());
-    it.appendChild(h);
-    row(it, 'muted', 'target ' + r.targetIp + ' · reported by ' + r.reporterIp);
-    row(it, 'muted', r.why || '');
-    if (r.note) row(it, 'note', '"' + r.note + '"');
-    row(it, 'muted', r.verdict
-      ? 'verdict: ' + r.verdict.frames + ' frame(s) · ' + JSON.stringify(r.verdict.scores)
-      : 'no automated verdict — judge on the report alone');
-    var acts = document.createElement('div'); acts.className = 'actions';
-    ['ban', 'dismiss'].forEach(function (action) {
-      var b = document.createElement('button');
-      b.className = 'act' + (action === 'ban' ? ' ban' : '');
-      b.textContent = action === 'ban' ? 'Ban this IP' : 'Dismiss';
-      b.addEventListener('click', function () {
-        [].forEach.call(acts.querySelectorAll('button'), function (x) { x.disabled = true; });
-        api('/admin/review/act', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ id: r.id, action: action }) })
-          .then(function (res) {
-            if (res.ok) { it.style.opacity = .4; acts.textContent = action === 'ban' ? 'Banned.' : 'Dismissed.'; load(); }
-            else { [].forEach.call(acts.querySelectorAll('button'), function (x) { x.disabled = false; }); }
-          });
-      });
-      acts.appendChild(b);
+// Discord signs every interaction; an unsigned or badly signed one is either a
+// misconfiguration or someone probing the endpoint, and Discord itself sends
+// deliberately-invalid requests to check we reject them. Raw bytes only — the
+// signature covers the exact body, so this cannot be done after JSON.parse.
+const ED25519_SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
+function discordSignatureOk(req, raw) {
+  const pub = process.env.DISCORD_PUBLIC_KEY;
+  const sig = req.headers['x-signature-ed25519'];
+  const ts = req.headers['x-signature-timestamp'];
+  if (!pub || !sig || !ts) return false;
+  try {
+    const key = crypto.createPublicKey({
+      key: Buffer.concat([ED25519_SPKI_PREFIX, Buffer.from(pub, 'hex')]),
+      format: 'der', type: 'spki',
     });
-    it.appendChild(acts);
-    box.appendChild(it);
-  });
+    return crypto.verify(null, Buffer.concat([Buffer.from(ts), raw]), key, Buffer.from(sig, 'hex'));
+  } catch (e) { console.warn('discord signature check failed:', e && e.message); return false; }
 }
 
-function renderStats(st, bans) {
-  var box = el('stats'); box.textContent = '';
-  var g = document.createElement('div'); g.className = 'grid';
-  [['Online now', st.online], ['Peak online', st.peakOnline], ['Page loads', st.visits],
-   ['Browsers', st.people], ['Started', st.starts], ['Start rate', st.startRate == null ? '—' : st.startRate + '%'],
-   ['Matches', st.matches], ['Reports', st.reports], ['Bans', st.bans], ['Banned IPs held', bans]
-  ].forEach(function (p) {
-    var d = document.createElement('div'); d.className = 'stat';
-    var b = document.createElement('b'); b.textContent = p[1] == null ? '—' : p[1]; d.appendChild(b);
-    var sp = document.createElement('span'); sp.textContent = p[0]; d.appendChild(sp);
-    g.appendChild(d);
-  });
-  box.appendChild(g);
-  var pre = document.createElement('pre'); pre.textContent = JSON.stringify(st, null, 2); box.appendChild(pre);
-}
-
-function renderReports(items) {
-  var box = el('reports'); box.textContent = '';
-  if (!items.length) { row(box, 'empty', 'No reports yet.'); return; }
-  items.forEach(function (r) {
-    var it = document.createElement('div'); it.className = 'item';
-    var h = document.createElement('div'); h.className = 'head';
-    row(h, null, r.kind + ' · ' + (r.reason || 'n/a'));
-    row(h, 'muted', new Date(r.ts).toLocaleString());
-    it.appendChild(h);
-    row(it, 'muted', 'target ' + (r.targetIp || 'n/a') + ' · by ' + (r.reporterIp || 'n/a'));
-    row(it, 'muted', r.action || '');
-    if (r.note) row(it, 'note', '"' + r.note + '"');
-    box.appendChild(it);
-  });
-}
-
-function renderConn(c) {
-  var box = el('conn'); box.textContent = '';
-  row(box, 'muted', 'Every ban is keyed on the address below. Open this page from a phone on cell data — clientIp must be the public address of that phone, not something a header invented. If it is wrong, set TRUSTED_PROXY_HOPS.');
-  var pre = document.createElement('pre'); pre.textContent = JSON.stringify(c, null, 2); box.appendChild(pre);
-}
-
-function load(fromGate) {
-  if (!KEY) return showGate('');
-  api('/admin/data').then(function (r) {
-    if (r.status === 403) { localStorage.removeItem('olumie_admin_key'); return showGate(fromGate ? 'That key was not accepted.' : ''); }
-    return r.json().then(function (d) {
-      localStorage.setItem('olumie_admin_key', KEY);
-      el('gate').hidden = true; el('app').hidden = false;
-      el('updated').textContent = 'updated ' + new Date().toLocaleTimeString();
-      renderReview(d.review); renderStats(d.stats, d.bans); renderReports(d.reports); renderConn(d.conn);
-    });
-  }).catch(function () { el('updated').textContent = 'offline — retrying'; });
-}
-load();
-setInterval(function () { if (KEY && !document.hidden) load(); }, 20000);
-document.addEventListener('visibilitychange', function () { if (!document.hidden) load(); });
-</script>
-</body></html>`;
-}
-
-function reviewPage(items, key) {
-  const rows = items.map((r) => `
-    <div class="item" data-id="${r.id}">
-      <div class="head">
-        <strong>#${r.id} · ${esc(r.reason || 'unspecified')}</strong>
-        <span class="muted">${esc(r.ts)}</span>
-      </div>
-      <div class="muted">target ${esc(r.targetIp)} · reported by ${esc(r.reporterIp)} · ${esc(r.why || '')}</div>
-      ${r.note ? `<div class="note">"${esc(r.note)}"</div>` : ''}
-      ${r.verdict ? `<div class="muted">verdict: ${r.verdict.frames} frame(s) · ${esc(JSON.stringify(r.verdict.scores))}</div>` : '<div class="muted">no automated verdict — judge on the report alone</div>'}
-      <div class="actions">
-        <button class="ban" onclick="act(${r.id}, 'ban')">Ban this IP</button>
-        <button class="dismiss" onclick="act(${r.id}, 'dismiss')">Dismiss</button>
-      </div>
-    </div>`).join('');
-  return `<!doctype html><html><head><meta charset="utf-8"><title>Review queue</title>
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<style>
- body{font:15px/1.5 system-ui,sans-serif;background:#0f1115;color:#e6e8ec;margin:0;padding:24px}
- h1{font-size:20px;margin:0 0 4px}
- .muted{color:#98a0ae;font-size:13px}
- .item{border:1px solid #262b36;border-radius:10px;padding:14px;margin:14px 0;background:#151922}
- .head{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:6px}
- .note{margin:8px 0;padding:8px 10px;background:#0f1115;border-radius:6px;white-space:pre-wrap;word-break:break-word}
- .actions{margin-top:10px;display:flex;gap:8px}
- button{font:inherit;padding:7px 13px;border-radius:7px;border:1px solid #333a49;background:#1c2230;color:#e6e8ec;cursor:pointer}
- button.ban{background:#7f1d1d;border-color:#a33}
- button:disabled{opacity:.45;cursor:default}
- .empty{padding:40px;text-align:center;color:#98a0ae}
-</style></head><body>
-<h1>Review queue</h1>
-<p class="muted">${items.length} waiting. Nothing here has banned anyone — these are the reports that did <em>not</em> earn an automatic ban: every non-visual reason, and any visual report whose check came back clean. No images are stored anywhere; frames never leave the reporter's browser.</p>
-${rows || '<div class="empty">Nothing waiting.</div>'}
-<script>
-async function act(id, action) {
-  const el = document.querySelector('[data-id="' + id + '"]');
-  el.querySelectorAll('button').forEach(b => b.disabled = true);
-  const r = await fetch('/admin/review/act?key=' + encodeURIComponent(${JSON.stringify(key || '')}), {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: id, action: action })
-  });
-  if (r.ok) { el.style.opacity = .4; el.querySelector('.actions').textContent = action === 'ban' ? 'Banned.' : 'Dismissed.'; }
-  else { el.querySelectorAll('button').forEach(b => b.disabled = false); alert('Failed: ' + await r.text()); }
-}
-</script>
-</body></html>`;
+function discordStatsText() {
+  const st = statsSummary();
+  const open = reviewQueue.filter((r) => r.status === 'open').length;
+  return [
+    `**Online** ${st.online}  ·  **Peak** ${st.peakOnline}`,
+    `**Page loads** ${st.visits}  ·  **Browsers** ${st.people}  ·  **Started** ${st.starts}${st.startRate == null ? '' : ` (${st.startRate}%)`}`,
+    `**Sessions** ${st.sessions}  ·  **Skips** ${st.skips}  ·  **Reports** ${st.reports}  ·  **Bans** ${st.bans}`,
+    `**Queue** ${open} waiting  ·  **Banned IPs held** ${bannedIps.size}`,
+    `_counting since ${new Date(st.since).toUTCString()} — resets on deploy_`,
+  ].join('\n');
 }
 
 // ---- report audit trail ---------------------------------------------------
@@ -1270,7 +1051,10 @@ function queueReview(rec) {
   reviewQueue.push(item);
   if (reviewQueue.length > MAX_REVIEW) reviewQueue.shift();
   console.log('REVIEW ' + JSON.stringify(item));
-  notify(`📋 **Review queued** (#${item.id}) · ${item.reason || 'n/a'}${item.note ? ` · "${item.note}"` : ''} · target ${item.targetIp}${item.verdict ? ` · scores ${JSON.stringify(item.verdict.scores || {})}` : ' · no verdict'}`);
+  // With the bot configured this is an actionable card; without it, the old
+  // one-line ping, so nothing goes silent while Discord is being set up.
+  if (discordReady()) discordSend(process.env.DISCORD_CHANNEL_ID, reviewCard(item));
+  else notify(`📋 **Review queued** (#${item.id}) · ${item.reason || 'n/a'}${item.note ? ` · "${item.note}"` : ''} · target ${item.targetIp}${item.verdict ? ` · scores ${JSON.stringify(item.verdict.scores || {})}` : ' · no verdict'}`);
   return item;
 }
 
@@ -1501,8 +1285,8 @@ function mayBan(reporterIp, cost) {
   return { ok: true };
 }
 
-function banSocket(socket) {
-  bump('bans');
+function banSocket(socket, countIt) {
+  if (countIt !== false) bump('bans');
   bannedIps.add(socket.ip);
   console.log(`Banned IP ${socket.ip} (${socket.peerId})`);
   // The unban token must ride IN the banned message — the client tears the

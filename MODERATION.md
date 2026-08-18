@@ -28,9 +28,10 @@ the trail to do that.
   frames the reporter’s own browser already sampled — plus room in the
   reporter’s ban budget (5/hour) and the site-wide breaker (30/hour).
   Everything else — Harassment, Under 18, Spam or scam, Something else, and any
-  visual report that came back clean — waits at **/admin/review?key=ADMIN_KEY**
-  for a human. "Report last" now shows thumbnails of the last few strangers and
-  reports **only the one picked**; it used to ban the whole batch.
+  visual report that came back clean — waits for a human. It arrives in Discord
+  as a card with Ban / Dismiss buttons (see `DISCORD.md`); `/admin/review` is
+  the same list as JSON. "Report last" now shows thumbnails of the last few
+  strangers and reports **only the one picked**; it used to ban the whole batch.
 
   Those thumbnails never leave the browser. Frames are held in the reporter’s
   tab for 30s and only a verdict made of numbers is transmitted — no image is
