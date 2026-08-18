@@ -452,8 +452,7 @@ const server = http.createServer((req, res) => {
 
   // Moderation report log (JSON). Gated by ?key=<ADMIN_KEY>; disabled if unset.
   if (urlPath === '/admin/reports') {
-    const key = new URLSearchParams((req.url.split('?')[1] || '')).get('key');
-    if (!process.env.ADMIN_KEY || key !== process.env.ADMIN_KEY) { res.writeHead(403); return res.end('Forbidden'); }
+    if (!adminKeyOk(req, new URLSearchParams((req.url.split('?')[1] || '')))) { res.writeHead(403); return res.end('Forbidden'); }
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
     return res.end(JSON.stringify({ count: recentReports.length, reports: recentReports.slice().reverse() }, null, 2));
   }
@@ -472,12 +471,47 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // One place for all of it. The shell carries no data, so it needs no key to
+  // load; the key is typed once, kept in localStorage, and sent as a header on
+  // every fetch below. The individual endpoints all still work on their own.
+  if (urlPath === '/admin' || urlPath === '/admin/') {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+    return res.end(adminPage());
+  }
+  // Everything the hub shows, in one round trip — so a phone on a bad
+  // connection makes one request, not four.
+  if (urlPath === '/admin/data') {
+    const q = new URLSearchParams((req.url.split('?')[1] || ''));
+    if (!adminKeyOk(req, q)) { res.writeHead(403); return res.end('Forbidden'); }
+    return referralPayouts().then((payouts) => {
+      const summary = statsSummary();
+      summary.referrals = {};
+      const refs = new Set([...refClicks.keys(), ...Object.keys(payouts || {})]);
+      refs.forEach((r) => {
+        summary.referrals[r] = { clicks: refClicks.get(r) || 0, ...(payouts && payouts[r] ? payouts[r] : { accounts: null, paying: null }) };
+      });
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({
+        stats: summary,
+        review: reviewQueue.filter((r) => r.status === 'open').slice().reverse(),
+        reports: recentReports.slice(-60).reverse(),
+        bans: bannedIps.size,
+        conn: {
+          clientIp: getClientIp(req),
+          trustedProxyHops: TRUSTED_PROXY_HOPS,
+          xForwardedFor: forwardedChain(req),
+          socketRemote: req.socket.remoteAddress || null,
+        },
+      }));
+    });
+  }
+
   // The review queue. Everything that did not earn an automatic ban waits here
   // for a decision. Acting on an entry is a POST so it can't be fired by a
   // prefetch, a link preview, or an <img> someone drops in a chat.
   if (urlPath === '/admin/review' || urlPath === '/admin/review/act') {
     const q = new URLSearchParams((req.url.split('?')[1] || ''));
-    if (!process.env.ADMIN_KEY || q.get('key') !== process.env.ADMIN_KEY) { res.writeHead(403); return res.end('Forbidden'); }
+    if (!adminKeyOk(req, q)) { res.writeHead(403); return res.end('Forbidden'); }
     if (urlPath === '/admin/review/act') {
       if (req.method !== 'POST') { res.writeHead(405); return res.end('POST only'); }
       const chunks = [];
@@ -517,8 +551,7 @@ const server = http.createServer((req, res) => {
   // public address and not something a header invented. Every ban is keyed on
   // this value, so it is worth being sure rather than assuming.
   if (urlPath === '/admin/whoami') {
-    const key = new URLSearchParams((req.url.split('?')[1] || '')).get('key');
-    if (!process.env.ADMIN_KEY || key !== process.env.ADMIN_KEY) { res.writeHead(403); return res.end('Forbidden'); }
+    if (!adminKeyOk(req, new URLSearchParams((req.url.split('?')[1] || '')))) { res.writeHead(403); return res.end('Forbidden'); }
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
     return res.end(JSON.stringify({
       clientIp: getClientIp(req),
@@ -532,7 +565,7 @@ const server = http.createServer((req, res) => {
   // same "inert until the env var is set" rule as everything else here.
   if (urlPath === '/admin/stats') {
     const q = new URLSearchParams((req.url.split('?')[1] || ''));
-    if (!process.env.ADMIN_KEY || q.get('key') !== process.env.ADMIN_KEY) { res.writeHead(403); return res.end('Forbidden'); }
+    if (!adminKeyOk(req, q)) { res.writeHead(403); return res.end('Forbidden'); }
     // Referral payouts come from Supabase (durable — money), the rest from the
     // in-memory counters; the page shows both side by side.
     return referralPayouts().then((payouts) => {
@@ -649,6 +682,14 @@ function spendToken(socket) {
   if (socket.tokens <= 0) return false;
   socket.tokens--;
   return true;
+}
+// The key may arrive as a header instead of a query string. That is what the
+// /admin hub uses, which keeps ADMIN_KEY out of URLs — and so out of access
+// logs, Referer headers, browser history and anything that shoulder-surfs a
+// address bar. The ?key= form still works; every doc and bookmark uses it.
+function adminKeyOk(req, q) {
+  const key = req.headers['x-admin-key'] || (q && q.get('key')) || '';
+  return !!process.env.ADMIN_KEY && key === process.env.ADMIN_KEY;
 }
 function send(socket, obj) {
   if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(obj));
@@ -957,6 +998,195 @@ ${Object.keys(s.referrals || {}).length ? `
 function esc(v) {
   return String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
+// Deliberately mobile-first: this gets opened on a phone, from a Discord ping,
+// usually one-handed. Add it to the home screen and it behaves like an app.
+function adminPage() {
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Olumie admin</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0f1115">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<style>
+ *{box-sizing:border-box}
+ body{font:15px/1.5 system-ui,-apple-system,sans-serif;background:#0f1115;color:#e6e8ec;margin:0;
+      padding:16px 16px calc(24px + env(safe-area-inset-bottom));-webkit-text-size-adjust:100%}
+ header{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:14px}
+ h1{font-size:19px;margin:0}
+ .muted{color:#98a0ae;font-size:13px}
+ nav{display:flex;gap:6px;overflow-x:auto;margin:0 -16px 16px;padding:0 16px 4px;-webkit-overflow-scrolling:touch}
+ nav button{flex:0 0 auto;font:inherit;font-size:14px;padding:8px 14px;border-radius:999px;border:1px solid #262b36;
+            background:#151922;color:#98a0ae;cursor:pointer}
+ nav button.on{background:#e6e8ec;color:#0f1115;border-color:#e6e8ec;font-weight:600}
+ .badge{display:inline-block;min-width:19px;padding:0 5px;margin-left:6px;border-radius:999px;background:#7f1d1d;
+        color:#fff;font-size:12px;text-align:center;font-weight:700}
+ nav button.on .badge{background:#7f1d1d;color:#fff}
+ section{display:none} section.on{display:block}
+ .item{border:1px solid #262b36;border-radius:10px;padding:13px;margin:0 0 12px;background:#151922}
+ .head{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:5px;font-weight:600}
+ .note{margin:8px 0;padding:8px 10px;background:#0f1115;border-radius:6px;white-space:pre-wrap;word-break:break-word}
+ .actions{margin-top:10px;display:flex;gap:8px}
+ button.act{font:inherit;padding:9px 15px;border-radius:8px;border:1px solid #333a49;background:#1c2230;
+            color:#e6e8ec;cursor:pointer;min-height:40px}
+ button.act.ban{background:#7f1d1d;border-color:#a33}
+ button.act:disabled{opacity:.45}
+ .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px}
+ .stat{border:1px solid #262b36;border-radius:10px;padding:11px 13px;background:#151922}
+ .stat b{display:block;font-size:22px;font-variant-numeric:tabular-nums}
+ .stat span{font-size:12px;color:#98a0ae}
+ .empty{padding:34px;text-align:center;color:#98a0ae}
+ pre{overflow-x:auto;background:#151922;border:1px solid #262b36;border-radius:10px;padding:12px;font-size:12.5px}
+ #gate{max-width:340px;margin:14vh auto 0}
+ input{font:inherit;width:100%;padding:11px 13px;border-radius:9px;border:1px solid #333a49;background:#151922;color:#e6e8ec}
+</style></head><body>
+
+<div id="gate" hidden>
+  <h1>Olumie admin</h1>
+  <p class="muted">Admin key. Stored on this device only — it is sent as a header, never in the address bar.</p>
+  <form id="gateForm"><input id="keyInput" type="password" autocomplete="off" placeholder="ADMIN_KEY" autofocus></form>
+  <p class="muted" id="gateErr"></p>
+</div>
+
+<div id="app" hidden>
+  <header>
+    <h1>Olumie admin</h1>
+    <span class="muted" id="updated"></span>
+    <span style="flex:1"></span>
+    <button class="act" id="signout" style="padding:5px 11px;min-height:0;font-size:13px">Forget key</button>
+  </header>
+  <nav>
+    <button data-tab="review" class="on">Review <span class="badge" id="nReview">0</span></button>
+    <button data-tab="stats">Stats</button>
+    <button data-tab="reports">Reports</button>
+    <button data-tab="conn">Connection</button>
+  </nav>
+  <section id="review" class="on"></section>
+  <section id="stats"></section>
+  <section id="reports"></section>
+  <section id="conn"></section>
+</div>
+
+<script>
+var KEY = localStorage.getItem('olumie_admin_key') || '';
+var el = function (id) { return document.getElementById(id); };
+function api(path, opts) {
+  opts = opts || {}; opts.headers = Object.assign({ 'X-Admin-Key': KEY }, opts.headers || {});
+  return fetch(path, opts);
+}
+function showGate(msg) {
+  el('gate').hidden = false; el('app').hidden = true; el('gateErr').textContent = msg || '';
+  el('keyInput').focus();
+}
+el('gateForm').addEventListener('submit', function (e) {
+  e.preventDefault(); KEY = el('keyInput').value.trim(); load(true);
+});
+el('signout').addEventListener('click', function () {
+  localStorage.removeItem('olumie_admin_key'); KEY = ''; showGate('');
+});
+[].forEach.call(document.querySelectorAll('nav button'), function (b) {
+  b.addEventListener('click', function () {
+    [].forEach.call(document.querySelectorAll('nav button'), function (x) { x.classList.remove('on'); });
+    [].forEach.call(document.querySelectorAll('section'), function (x) { x.classList.remove('on'); });
+    b.classList.add('on'); el(b.dataset.tab).classList.add('on');
+  });
+});
+
+// Everything below builds DOM with textContent. Reasons and notes are typed by
+// strangers; none of it goes near innerHTML.
+function row(parent, cls, text) { var d = document.createElement('div'); if (cls) d.className = cls; d.textContent = text; parent.appendChild(d); return d; }
+
+function renderReview(items) {
+  var box = el('review'); box.textContent = '';
+  el('nReview').textContent = items.length;
+  if (!items.length) { row(box, 'empty', 'Nothing waiting.'); return; }
+  items.forEach(function (r) {
+    var it = document.createElement('div'); it.className = 'item';
+    var h = document.createElement('div'); h.className = 'head';
+    row(h, null, '#' + r.id + ' · ' + (r.reason || 'unspecified'));
+    row(h, 'muted', new Date(r.ts).toLocaleString());
+    it.appendChild(h);
+    row(it, 'muted', 'target ' + r.targetIp + ' · reported by ' + r.reporterIp);
+    row(it, 'muted', r.why || '');
+    if (r.note) row(it, 'note', '"' + r.note + '"');
+    row(it, 'muted', r.verdict
+      ? 'verdict: ' + r.verdict.frames + ' frame(s) · ' + JSON.stringify(r.verdict.scores)
+      : 'no automated verdict — judge on the report alone');
+    var acts = document.createElement('div'); acts.className = 'actions';
+    ['ban', 'dismiss'].forEach(function (action) {
+      var b = document.createElement('button');
+      b.className = 'act' + (action === 'ban' ? ' ban' : '');
+      b.textContent = action === 'ban' ? 'Ban this IP' : 'Dismiss';
+      b.addEventListener('click', function () {
+        [].forEach.call(acts.querySelectorAll('button'), function (x) { x.disabled = true; });
+        api('/admin/review/act', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: r.id, action: action }) })
+          .then(function (res) {
+            if (res.ok) { it.style.opacity = .4; acts.textContent = action === 'ban' ? 'Banned.' : 'Dismissed.'; load(); }
+            else { [].forEach.call(acts.querySelectorAll('button'), function (x) { x.disabled = false; }); }
+          });
+      });
+      acts.appendChild(b);
+    });
+    it.appendChild(acts);
+    box.appendChild(it);
+  });
+}
+
+function renderStats(st, bans) {
+  var box = el('stats'); box.textContent = '';
+  var g = document.createElement('div'); g.className = 'grid';
+  [['Online now', st.online], ['Peak online', st.peakOnline], ['Page loads', st.visits],
+   ['Browsers', st.people], ['Started', st.starts], ['Start rate', st.startRate == null ? '—' : st.startRate + '%'],
+   ['Matches', st.matches], ['Reports', st.reports], ['Bans', st.bans], ['Banned IPs held', bans]
+  ].forEach(function (p) {
+    var d = document.createElement('div'); d.className = 'stat';
+    var b = document.createElement('b'); b.textContent = p[1] == null ? '—' : p[1]; d.appendChild(b);
+    var sp = document.createElement('span'); sp.textContent = p[0]; d.appendChild(sp);
+    g.appendChild(d);
+  });
+  box.appendChild(g);
+  var pre = document.createElement('pre'); pre.textContent = JSON.stringify(st, null, 2); box.appendChild(pre);
+}
+
+function renderReports(items) {
+  var box = el('reports'); box.textContent = '';
+  if (!items.length) { row(box, 'empty', 'No reports yet.'); return; }
+  items.forEach(function (r) {
+    var it = document.createElement('div'); it.className = 'item';
+    var h = document.createElement('div'); h.className = 'head';
+    row(h, null, r.kind + ' · ' + (r.reason || 'n/a'));
+    row(h, 'muted', new Date(r.ts).toLocaleString());
+    it.appendChild(h);
+    row(it, 'muted', 'target ' + (r.targetIp || 'n/a') + ' · by ' + (r.reporterIp || 'n/a'));
+    row(it, 'muted', r.action || '');
+    if (r.note) row(it, 'note', '"' + r.note + '"');
+    box.appendChild(it);
+  });
+}
+
+function renderConn(c) {
+  var box = el('conn'); box.textContent = '';
+  row(box, 'muted', 'Every ban is keyed on the address below. Open this page from a phone on cell data — clientIp must be the public address of that phone, not something a header invented. If it is wrong, set TRUSTED_PROXY_HOPS.');
+  var pre = document.createElement('pre'); pre.textContent = JSON.stringify(c, null, 2); box.appendChild(pre);
+}
+
+function load(fromGate) {
+  if (!KEY) return showGate('');
+  api('/admin/data').then(function (r) {
+    if (r.status === 403) { localStorage.removeItem('olumie_admin_key'); return showGate(fromGate ? 'That key was not accepted.' : ''); }
+    return r.json().then(function (d) {
+      localStorage.setItem('olumie_admin_key', KEY);
+      el('gate').hidden = true; el('app').hidden = false;
+      el('updated').textContent = 'updated ' + new Date().toLocaleTimeString();
+      renderReview(d.review); renderStats(d.stats, d.bans); renderReports(d.reports); renderConn(d.conn);
+    });
+  }).catch(function () { el('updated').textContent = 'offline — retrying'; });
+}
+load();
+setInterval(function () { if (KEY && !document.hidden) load(); }, 20000);
+document.addEventListener('visibilitychange', function () { if (!document.hidden) load(); });
+</script>
+</body></html>`;
+}
+
 function reviewPage(items, key) {
   const rows = items.map((r) => `
     <div class="item" data-id="${r.id}">

@@ -337,14 +337,42 @@ If WebGL lies it retries on CPU; if that also fails, moderation stays honestly
 `off`. Costs ~25 ms once. **Never delete this check**: a detector that says it
 is running while seeing nothing is worse than one that admits it is off.
 
+### One admin surface: `/admin`
+
+`olumie.chat/admin` is the only one worth bookmarking. Review queue (with a
+count badge), stats, recent reports, and the connection check, in four tabs
+off a single `/admin/data` request — one round trip, so a phone on a bad
+signal is not making four. Refreshes every 20s and on refocus.
+
+The shell carries **no data**, so it loads without a key; the key is typed
+once, kept in `localStorage`, and sent as an **`X-Admin-Key` header** on every
+fetch. So ADMIN_KEY stops appearing in URLs — no more leaking into access logs,
+Referer headers, browser history or a screen-shared address bar. `adminKeyOk()`
+accepts either form, so every existing `?key=` link and doc still works.
+
+Built mobile-first on purpose — this gets opened one-handed off a Discord ping.
+Add it to the home screen and it behaves like an app.
+
+**Trap for whoever edits `adminPage()` next:** the page is a template literal
+inside `server.js`, so a `\'` in your HTML is eaten by the template and the
+browser receives a bare apostrophe — which, inside a single-quoted JS string,
+kills the *entire* inline script with no console error and a blank page. It
+already happened once. Avoid apostrophes in that literal rather than escaping
+them twice, and sanity-check with:
+
+```bash
+curl -s localhost:3000/admin | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{new Function(d.match(/<script>([\\s\\S]*?)<\\/script>/)[1]);console.log('parses OK')})"
+```
+
 ### Known, not fixed
 
 - **`@supabase/supabase-js@2` is an unpinned CDN tag.** Whatever jsdelivr
   resolves `@2` to runs on the site with full access to the page. Pin the exact
   version and add an SRI hash.
-- **`ADMIN_KEY` rides in a query string**, so it lands in access logs and
-  Referer headers — the same thing `/visit` was deliberately built to avoid.
-  It is now on `/admin/review` too.
+- **`ADMIN_KEY` in a query string is now opt-in, not forced.** `/admin` uses a
+  header, so normal use never puts the key in a URL. The `?key=` form still
+  works on every endpoint for curl and old bookmarks — and still lands in
+  access logs and Referer headers when you use it.
 - **The review queue is in memory** (`MAX_REVIEW` 500) and empties on deploy.
   Reports themselves are durable in Supabase via `dbInsertReport`; the pending
   decisions are not. If a deploy lands mid-triage, the queue is gone.
