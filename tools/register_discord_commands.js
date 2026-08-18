@@ -27,6 +27,8 @@ const COMMANDS = [
   { name: 'stats', description: 'Live numbers: online, page loads, matches, reports, bans, queue depth', type: 1 },
   { name: 'queue', description: 'Repost the waiting reports as cards you can act on', type: 1 },
   { name: 'whoami', description: 'What the server thinks a visitor IP looks like (proxy hop check)', type: 1 },
+  { name: 'unban', description: 'Lift a ban on an IP address', type: 1,
+    options: [{ name: 'ip', description: 'The IP to unban', type: 3, required: true }] },
 ];
 
 const url = GUILD

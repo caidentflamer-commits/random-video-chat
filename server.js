@@ -187,15 +187,10 @@ async function handleStripeEvent(event) {
           reason = (data && data[0] && data[0].reason) || '';
         } catch {}
       }
-      bannedIps.delete(ip);
-      if (supa) {
-        // Expire rather than delete: the ban history stays auditable.
-        const { error } = await supa.from('bans')
-          .update({ expires_at: new Date().toISOString() }).eq('ip', ip);
-        if (error) throw new Error(`unban expire failed for ${ip}: ${error.message}`);
-      }
-      bump('unbans');
-      console.log(`UNBAN paid: ${ip}${reason ? ` (was banned for: ${reason})` : ''}`);
+      const lifted = await unbanIp(ip, 'stripe');
+      // A paid unban that cannot be applied must fail loudly — they have been
+      // charged, so a silent no-op is money taken for nothing.
+      if (!lifted.ok && !/was not banned/.test(lifted.text)) throw new Error(`unban failed for ${ip}: ${lifted.text}`);
       const hook = process.env.REPORT_WEBHOOK_URL;
       if (hook && typeof fetch === 'function') {
         try { fetch(hook, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: `💰 Paid unban: ${ip}${reason ? ` — was banned for: **${reason}**` : ''}` }) }).catch(() => {}); } catch {}
@@ -418,6 +413,17 @@ const server = http.createServer((req, res) => {
       if (body.type === 2) {                                                 // APPLICATION_COMMAND
         const name = (body.data && body.data.name) || '';
         if (name === 'stats') return say(discordStatsText());
+        if (name === 'unban') {
+          const opt = ((body.data && body.data.options) || []).find((o) => o.name === 'ip');
+          const ip = opt && String(opt.value || '').trim();
+          if (!ip) return say('Give me an IP: `/unban ip:1.2.3.4`');
+          // Answer inside Discord's 3s window, then report the outcome as a
+          // follow-up — this one awaits Supabase, unlike the button handlers.
+          unbanIp(ip, user.username || user.id).then((out) => {
+            discordSend(body.channel_id, { content: (out.ok ? '✅ ' : '⚠️ ') + out.text + ' — by ' + (user.username || user.id) });
+          });
+          return say('Working on `' + ip + '`…');
+        }
         if (name === 'queue') {
           const open = reviewQueue.filter((r) => r.status === 'open').slice().reverse();
           if (!open.length) return say('Queue is empty.');
@@ -577,9 +583,22 @@ const server = http.createServer((req, res) => {
   // The review queue as JSON, plus the POST that acts on an entry. The Discord
   // buttons are the normal way in; this is the same decision by curl. It stays a
   // POST so no prefetch, link preview or <img> in a chat can fire it.
-  if (urlPath === '/admin/review' || urlPath === '/admin/review/act') {
+  if (urlPath === '/admin/review' || urlPath === '/admin/review/act' || urlPath === '/admin/unban') {
     const q = new URLSearchParams((req.url.split('?')[1] || ''));
     if (!adminKeyOk(req, q)) { res.writeHead(403); return res.end('Forbidden'); }
+    if (urlPath === '/admin/unban') {
+      if (req.method !== 'POST') { res.writeHead(405); return res.end('POST only'); }
+      const chunks = [];
+      req.on('data', (c) => { chunks.push(c); if (chunks.length > 50) req.destroy(); });
+      req.on('end', async () => {
+        let body = {};
+        try { body = JSON.parse(Buffer.concat(chunks).toString() || '{}'); } catch {}
+        const out = await unbanIp(body.ip, 'curl');
+        res.writeHead(out.ok ? 200 : 400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(out));
+      });
+      return;
+    }
     if (urlPath === '/admin/review/act') {
       if (req.method !== 'POST') { res.writeHead(405); return res.end('POST only'); }
       const chunks = [];
@@ -1394,6 +1413,36 @@ function banIp(ip, reason, socket) {
   bannedIps.add(ip);
   dbInsertBan(ip, reason);
   return true;
+}
+
+// Until now the ONLY way out of a ban was to pay for it. Banning is one tap and
+// reversing it meant hand-editing Supabase, which is the wrong asymmetry to
+// have when a ban is a judgement call made in a hurry from a phone.
+//
+// Expires rather than deletes, matching the paid flow: the ban history stays
+// auditable, and "was banned, then unbanned by me" is a different fact from
+// "was never banned".
+async function unbanIp(ip, who) {
+  const target = String(ip || '').trim();
+  if (!target) return { ok: false, text: 'No IP given.' };
+  const wasInMemory = bannedIps.delete(target);
+  let reason = '', touched = 0;
+  if (supa) {
+    try {
+      const { data } = await supa.from('bans').select('reason').eq('ip', target)
+        .order('id', { ascending: false }).limit(1);
+      reason = (data && data[0] && data[0].reason) || '';
+      const { data: upd, error } = await supa.from('bans')
+        .update({ expires_at: new Date().toISOString() })
+        .eq('ip', target).is('expires_at', null).select('id');
+      if (error) return { ok: false, text: 'Database error: ' + error.message };
+      touched = (upd || []).length;
+    } catch (e) { return { ok: false, text: 'Database error: ' + (e && e.message) }; }
+  }
+  if (!wasInMemory && !touched) return { ok: false, text: '`' + target + '` was not banned.' };
+  bump('unbans');
+  console.log(`UNBAN by ${who || 'admin'}: ${target}${reason ? ` (was banned for: ${reason})` : ''}`);
+  return { ok: true, text: 'Unbanned `' + target + '`' + (reason ? ' — was banned for: ' + reason : ''), reason };
 }
 
 function banSocket(socket, countIt) {

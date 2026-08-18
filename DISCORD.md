@@ -98,9 +98,26 @@ transmitted. See `MODERATION.md` for why that line is not worth crossing.
 | `/stats` | Online, peak, page loads, browsers, sessions, skips, reports, bans, queue depth |
 | `/queue` | Reposts the waiting reports as fresh, actionable cards |
 | `/whoami` | Proxy-hop config, for checking `TRUSTED_PROXY_HOPS` |
+| `/unban` | Lift a ban — `/unban ip:1.2.3.4` |
 
 All three reply **ephemerally** — only you see the output, so the channel
 doesn't fill with numbers.
+
+## Unbanning
+
+`/unban ip:1.2.3.4` in Discord, or:
+
+```bash
+curl -s -X POST -H "X-Admin-Key: $ADMIN_KEY" -H "Content-Type: application/json" -d '{"ip":"1.2.3.4"}' https://olumie.chat/admin/unban
+```
+
+Before this the only exit from a ban was the **paid** link, so banning was one
+tap and reversing it meant hand-editing Supabase — the wrong asymmetry for a
+judgement call made in a hurry from a phone.
+
+It expires the ban row rather than deleting it, matching what the paid flow
+does: "banned, then unbanned" stays a different fact from "never banned".
+Unbanning something that is not banned is a 400, not a silent success.
 
 ## Still there for curl
 
