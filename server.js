@@ -935,8 +935,10 @@ async function discordSend(channelId, payload) {
 // buttons already sitting in the channel.
 function reviewCard(item) {
   const v = item.verdict;
+  const h = item.history;
   const lines = [
     `**Target** \`${item.targetIp}\`  ·  **Reporter** \`${item.reporterIp}\``,
+    `**History** ${historyLine(h) || 'unknown'}`,
     `**Why it's here** ${item.why || 'n/a'}`,
     v ? `**Verdict** ${v.frames} frame(s) · ${Object.entries(v.scores).map(([k, n]) => `${k} ${n}`).join(' · ')}`
       : '**Verdict** none — judge on the report alone',
@@ -946,7 +948,9 @@ function reviewCard(item) {
     embeds: [{
       title: `Review #${item.id} · ${item.reason || 'unspecified'}`,
       description: lines.join('\n'),
-      color: 0x7f1d1d,
+      // Red only when more than one person independently flagged them. A lone
+      // report should not look like a verdict before you have read it.
+      color: h && h.reporters >= 2 ? 0x7f1d1d : 0x3d4354,
       timestamp: item.ts,
     }],
     components: [{
@@ -1047,22 +1051,78 @@ const reviewQueue = [];
 const MAX_REVIEW = 500;
 let reviewSeq = 1;
 
+// The strongest thing a moderator has, given they cannot see the frame: one
+// stranger reporting someone is weak, but four unrelated people inside an hour
+// is stronger evidence than any single image — and unlike a report or a note, a
+// lone griefer cannot manufacture it.
+//
+// Distinct REPORTERS matters more than the raw count: ten reports from one
+// address is one person with a grudge, three from three addresses is a pattern.
+const HISTORY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+async function targetHistory(ip) {
+  // In-memory first — always available, and it definitely contains the report
+  // being queued right now, which the durable copy may not yet: logReport()
+  // fires dbInsertReport() without awaiting it, so the row can still be in
+  // flight. The two are merged rather than picked between, so the race cannot
+  // make a repeat offender look like a first-timer.
+  const local = new Set();
+  let localCount = 0;
+  recentReports.forEach((r) => {
+    if (r.targetIp !== ip) return;
+    localCount++;
+    if (r.reporterIp) local.add(r.reporterIp);
+  });
+  const out = { reports: localCount, reporters: local.size, durable: false, windowDays: 7 };
+  if (!supa) return out;
+  try {
+    const since = new Date(Date.now() - HISTORY_WINDOW_MS).toISOString();
+    const { data, error } = await supa
+      .from('reports').select('reporter_ip').eq('target_ip', ip).gte('created_at', since);
+    if (error || !data) return out;
+    const all = new Set(local);
+    data.forEach((r) => { if (r.reporter_ip) all.add(r.reporter_ip); });
+    out.reports = Math.max(localCount, data.length);
+    out.reporters = all.size;
+    out.durable = true;
+  } catch (e) { console.warn('history lookup failed:', e && e.message); }
+  return out;
+}
+
+function historyLine(h) {
+  if (!h) return null;
+  if (h.reports <= 1) return 'First report against this address' + (h.durable ? ' in ' + h.windowDays + ' days.' : ' this session.');
+  const who = h.reporters > 1 ? h.reporters + ' different reporters' : 'one reporter';
+  const flag = h.reporters >= 3 ? ' — a pattern, not a grudge' : '';
+  return h.reports + ' reports from ' + who + (h.durable ? ' in ' + h.windowDays + ' days' : ' this session') + flag;
+}
+
 function queueReview(rec) {
   const item = { id: reviewSeq++, ts: new Date().toISOString(), status: 'open', ...rec };
   reviewQueue.push(item);
   if (reviewQueue.length > MAX_REVIEW) reviewQueue.shift();
   console.log('REVIEW ' + JSON.stringify(item));
+  postReviewCard(item);   // async: needs a history lookup before it can render
+  return item;
+}
+
+// Async because the history lookup hits Supabase. Nothing waits on this — the
+// reporter already got their ack and left the room.
+async function postReviewCard(item) {
+  item.history = await targetHistory(item.targetIp);
   // With the bot configured this is an actionable card; otherwise the old
   // one-line ping. Crucially the ping is ALSO the fallback when the card fails
   // to send — a wrong token or channel id used to mean the report reached
   // Discord in no form whatsoever, which is the worst way for a moderation
   // queue to break, because it looks like quiet rather than broken.
-  const line = `📋 **Review queued** (#${item.id}) · ${item.reason || 'n/a'}${item.note ? ` · "${item.note}"` : ''} · target ${item.targetIp}${item.verdict ? ` · scores ${JSON.stringify(item.verdict.scores || {})}` : ' · no verdict'}`;
-  if (!discordReady()) notify(line);
-  else discordSend(process.env.DISCORD_CHANNEL_ID, reviewCard(item)).then((ok) => {
-    if (!ok) { console.error(`REVIEW #${item.id} card failed to post — falling back to the webhook. Run tools/discord_selftest.js.`); notify('⚠️ card failed to post — ' + line); }
-  });
-  return item;
+  const hist = historyLine(item.history);
+  const line = `📋 **Review queued** (#${item.id}) · ${item.reason || 'n/a'}${item.note ? ` · "${item.note}"` : ''} · target ${item.targetIp}${item.verdict ? ` · scores ${JSON.stringify(item.verdict.scores || {})}` : ' · no verdict'}${hist ? ` · ${hist}` : ''}`;
+  if (!discordReady()) return notify(line);
+  const ok = await discordSend(process.env.DISCORD_CHANNEL_ID, reviewCard(item));
+  if (!ok) {
+    console.error(`REVIEW #${item.id} card failed to post — falling back to the webhook. Run tools/discord_selftest.js.`);
+    notify('⚠️ card failed to post — ' + line);
+  }
 }
 
 // A report only bans on its own when a visual reason came back with a positive

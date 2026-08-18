@@ -33,6 +33,14 @@ the trail to do that.
   the same list as JSON. "Report last" now shows thumbnails of the last few
   strangers and reports **only the one picked**; it used to ban the whole batch.
 
+  Each card carries a **History** line — how many times that address has been
+  reported in the last 7 days, and by how many DIFFERENT reporters. Distinct
+  reporters is the number to read: ten reports from one address is one person
+  with a grudge, three from three addresses is a pattern a lone griefer cannot
+  manufacture. Since a moderator cannot see the frame, this is the strongest
+  evidence available to them. The card only turns red at two or more distinct
+  reporters — a single report should not look like a verdict before you read it.
+
   Those thumbnails never leave the browser. Frames are held in the reporter’s
   tab for 30s and only a verdict made of numbers is transmitted — no image is
   stored on any server, deliberately. See the CSAM note below for why.
