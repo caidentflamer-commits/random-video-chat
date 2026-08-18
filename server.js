@@ -1624,7 +1624,8 @@ wss.on('connection', (socket, req) => {
         // Decide first, log what actually happened second — logging from the
         // gate alone recorded "banned" for bans the exemption then refused.
         const banned = gate.ok && banIp(target.ip, reason, target);
-        const why = gate.ok ? (banned ? null : 'target is exempt — review only') : gate.reason;
+        const exempt = socketExempt(target);
+        const why = exempt ? 'target is exempt — recorded, not queued' : gate.reason;
         logReport({
           kind: reason.startsWith('auto:') ? 'auto-moderation' : 'user-report',
           reporter: socket.peerId, reporterIp: socket.ip, target: target.peerId, targetIp: target.ip,
@@ -1633,7 +1634,7 @@ wss.on('connection', (socket, req) => {
         });
         const p = socket.party;
         if (banned) banSocket(target);
-        else queueReview({ reason, note, targetIp: target.ip, target: target.peerId, reporterIp: socket.ip, reporter: socket.peerId, verdict: check.verdict || null, why });
+        else if (!exempt) queueReview({ reason, note, targetIp: target.ip, target: target.peerId, reporterIp: socket.ip, reporter: socket.peerId, verdict: check.verdict || null, why });
         // The reporter leaves the room either way. A throttled ban is our
         // problem, not theirs, and stranding someone with the person they just
         // reported is the one outcome worse than a missed ban.
@@ -1654,14 +1655,15 @@ wss.on('connection', (socket, req) => {
         const check = confirmedExplicit(msg);
         const gate = check.ban ? mayBan(socket.ip, 1) : { ok: false, reason: check.why };
         const banned = gate.ok && banIp(chosen.ip, reason || 'report-last', null);
-        const whyLast = gate.ok ? (banned ? null : 'target is exempt — review only') : gate.reason;
+        const exemptLast = ipExempt(chosen.ip);
+        const whyLast = exemptLast ? 'target is exempt — recorded, not queued' : gate.reason;
         logReport({
           kind: 'report-last', reporter: socket.peerId, reporterIp: socket.ip, target: chosen.peerId,
           targetIp: chosen.ip, reason, note,
           action: banned ? 'banned' : `NOT banned — ${whyLast}`,
         });
         if (banned) wss.clients.forEach((c) => { if (c.ip === chosen.ip && c.readyState === c.OPEN) banSocket(c); });
-        else queueReview({ reason, note, targetIp: chosen.ip, target: chosen.peerId, reporterIp: socket.ip, reporter: socket.peerId, verdict: check.verdict || null, why: whyLast });
+        else if (!exemptLast) queueReview({ reason, note, targetIp: chosen.ip, target: chosen.peerId, reporterIp: socket.ip, reporter: socket.peerId, verdict: check.verdict || null, why: whyLast });
         send(socket, { type: 'report-ack', last: true });
         // Only the reported one is spent; the others stay reportable.
         socket.lastOpponents = (socket.lastOpponents || []).filter((o) => o !== chosen);

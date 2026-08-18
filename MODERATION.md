@@ -41,6 +41,12 @@ the trail to do that.
   evidence available to them. The card only turns red at two or more distinct
   reporters — a single report should not look like a verdict before you read it.
 
+  **Exempt targets never reach the queue.** Someone on BAN_EXEMPT_IPS or
+  BAN_EXEMPT_USER_IDS cannot be banned, so there is no decision to make and the
+  card would be a Dismiss button with nothing behind it. Reports about them are
+  still logged, still in /admin/reports and the durable reports table, and still
+  count toward report history — out of the queue, not out of the record.
+
   Those thumbnails never leave the browser. Frames are held in the reporter’s
   tab for 30s and only a verdict made of numbers is transmitted — no image is
   stored on any server, deliberately. See the CSAM note below for why.
