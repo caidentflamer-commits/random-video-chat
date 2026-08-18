@@ -925,7 +925,7 @@ async function discordSend(channelId, payload) {
       headers: { 'Content-Type': 'application/json', Authorization: `Bot ${process.env.DISCORD_BOT_TOKEN}` },
       body: JSON.stringify(payload),
     });
-    if (!r.ok) console.error(`discord send failed ${r.status}: ${(await r.text()).slice(0, 200)}`);
+    if (!r.ok) console.error(`discord send failed ${r.status} to channel ${channelId}: ${(await r.text()).slice(0, 200)}`);
     return r.ok;
   } catch (e) { console.error('discord send error:', e && e.message); return false; }
 }
@@ -1051,10 +1051,16 @@ function queueReview(rec) {
   reviewQueue.push(item);
   if (reviewQueue.length > MAX_REVIEW) reviewQueue.shift();
   console.log('REVIEW ' + JSON.stringify(item));
-  // With the bot configured this is an actionable card; without it, the old
-  // one-line ping, so nothing goes silent while Discord is being set up.
-  if (discordReady()) discordSend(process.env.DISCORD_CHANNEL_ID, reviewCard(item));
-  else notify(`📋 **Review queued** (#${item.id}) · ${item.reason || 'n/a'}${item.note ? ` · "${item.note}"` : ''} · target ${item.targetIp}${item.verdict ? ` · scores ${JSON.stringify(item.verdict.scores || {})}` : ' · no verdict'}`);
+  // With the bot configured this is an actionable card; otherwise the old
+  // one-line ping. Crucially the ping is ALSO the fallback when the card fails
+  // to send — a wrong token or channel id used to mean the report reached
+  // Discord in no form whatsoever, which is the worst way for a moderation
+  // queue to break, because it looks like quiet rather than broken.
+  const line = `📋 **Review queued** (#${item.id}) · ${item.reason || 'n/a'}${item.note ? ` · "${item.note}"` : ''} · target ${item.targetIp}${item.verdict ? ` · scores ${JSON.stringify(item.verdict.scores || {})}` : ' · no verdict'}`;
+  if (!discordReady()) notify(line);
+  else discordSend(process.env.DISCORD_CHANNEL_ID, reviewCard(item)).then((ok) => {
+    if (!ok) { console.error(`REVIEW #${item.id} card failed to post — falling back to the webhook. Run tools/discord_selftest.js.`); notify('⚠️ card failed to post — ' + line); }
+  });
   return item;
 }
 
