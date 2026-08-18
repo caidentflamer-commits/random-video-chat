@@ -940,7 +940,7 @@ function reviewCard(item) {
     `**Target** \`${item.targetIp}\`  ·  **Reporter** \`${item.reporterIp}\``,
     `**History** ${historyLine(h) || 'unknown'}`,
     `**Why it's here** ${item.why || 'n/a'}`,
-    v ? `**Verdict** ${v.frames} frame(s) · ${Object.entries(v.scores).map(([k, n]) => `${k} ${n}`).join(' · ')}`
+    v ? `**Verdict** ${v.tripped}/${v.frames} frames over the line · ${Object.entries(v.scores).map(([k, n]) => `${k} ${n}`).join(' · ')}`
       : '**Verdict** none — judge on the report alone',
   ];
   if (item.note) lines.push(`**Note** ${String(item.note).replace(/`/g, "'").slice(0, 300)}`);
@@ -1138,7 +1138,16 @@ function confirmedExplicit(msg) {
   const v = msg.verdict;
   if (!v || typeof v !== 'object') return { ban: false, why: 'no verdict supplied' };
   if (v.explicit !== true) return { ban: false, why: 'verdict came back clean' };
-  return { ban: true, why: 'confirmed explicit', verdict: sanitizeVerdict(v) };
+  // Re-derive the majority rule here rather than taking the client's word for
+  // its own conclusion. The classifier spikes on the odd frame, so one frame
+  // over the line is noise, not evidence — and a client that says "explicit"
+  // while its own counts disagree is either stale code or a clumsy forgery.
+  // Neither should be able to ban anyone.
+  const clean = sanitizeVerdict(v);
+  if (clean.frames > 0 && clean.tripped * 2 <= clean.frames) {
+    return { ban: false, why: `only ${clean.tripped}/${clean.frames} frames over the line — not a majority`, verdict: clean };
+  }
+  return { ban: true, why: 'confirmed explicit', verdict: clean };
 }
 // Never store the client's object as-is — it is attacker-shaped input that
 // ends up in an admin page and a webhook.
@@ -1150,7 +1159,9 @@ function sanitizeVerdict(v) {
       if (Number.isFinite(n)) scores[k] = Math.round(Math.min(1, Math.max(0, n)) * 1000) / 1000;
     }
   }
-  return { explicit: v.explicit === true, frames: Math.min(10, Math.max(0, parseInt(v.frames, 10) || 0)), scores };
+  const frames = Math.min(10, Math.max(0, parseInt(v.frames, 10) || 0));
+  const tripped = Math.min(frames, Math.max(0, parseInt(v.tripped, 10) || 0));
+  return { explicit: v.explicit === true, frames, tripped, scores };
 }
 
 // ---- parties, rooms & mesh -----------------------------------------------

@@ -51,6 +51,30 @@ the trail to do that.
   tab for 30s and only a verdict made of numbers is transmitted — no image is
   stored on any server, deliberately. See the CSAM note below for why.
 
+## Why a majority of frames, not one
+
+Calibration showed the classifier is well behaved most of the time but spikes on
+the odd frame — motion blur, a shot caught mid-movement, a compression artifact.
+
+The auto path was always safe from that: `TRIPS_BEFORE_ACTION` needs two
+**consecutive** samples and any clean frame resets the counter. The manual
+report path was not. `verdictFor()` marked a report explicit if **any one** of
+the three retained frames tripped, so a single spike sitting anywhere in the
+buffer could confirm a malicious report and ban an innocent person
+automatically, with no human in the loop.
+
+Now a **majority** of the scored frames must trip. Real explicit content is in
+every frame rather than one, so a genuine report loses nothing, and a lone spike
+confirms nothing. It also removes the old asymmetry where a human-initiated
+report cleared a lower bar than the detector applied to itself.
+
+The server re-derives this from `tripped`/`frames` rather than trusting the
+client's `explicit` boolean — a client whose own counts contradict its
+conclusion is either running stale code or forging clumsily, and neither should
+ban anyone. **Note the deploy consequence:** a browser still running the old JS
+sends no `tripped` field, reads as 0, and its reports queue for review instead of
+banning. Fail-safe, and it clears itself on reload.
+
 ## Picking the thresholds
 
 `EXPLICIT_THRESHOLD` (0.60) and `SEXY_THRESHOLD` (0.85) came from nsfwjs, not

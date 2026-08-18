@@ -1365,17 +1365,32 @@ function rememberStranger(peerId, entry) {
 // person's decision rather than an automatic one.
 async function verdictFor(frames) {
   if (!nsfwModel || !frames || !frames.length) return null;
-  let worst = null, explicit = false;
+  let worst = null, tripped = 0, scored = 0;
   for (const f of frames) {
     try {
       const sc = await classifyCanvas(f);
+      scored++;
       if (!worst || ((sc.Porn || 0) + (sc.Hentai || 0)) > ((worst.Porn || 0) + (worst.Hentai || 0))) worst = sc;
-      if (isExplicit(sc)) explicit = true;
+      if (isExplicit(sc)) tripped++;
     } catch (err) { console.warn('Verdict frame failed:', err); }
   }
   if (!worst) return null;
+  // A MAJORITY of the frames has to trip, not just one of them. The classifier
+  // spikes on the odd frame — motion blur, a shot caught mid-movement, a
+  // compression artifact — and one-of-three meant a single spike anywhere in
+  // the buffer could confirm a malicious report and ban someone automatically,
+  // with nobody in the loop. Real explicit content is in every frame, not one,
+  // so this costs a genuine report nothing.
+  //
+  // It also matches the auto path, which has always needed TRIPS_BEFORE_ACTION
+  // consecutive samples. Manual reports used to clear a lower bar than the
+  // detector's own, which was backwards.
+  const explicit = scored > 0 && tripped * 2 > scored;
   const r = (n) => Math.round((n || 0) * 1000) / 1000;
-  return { explicit, frames: frames.length, scores: { Porn: r(worst.Porn), Hentai: r(worst.Hentai), Sexy: r(worst.Sexy), Neutral: r(worst.Neutral), Drawing: r(worst.Drawing) } };
+  return {
+    explicit, frames: scored, tripped,
+    scores: { Porn: r(worst.Porn), Hentai: r(worst.Hentai), Sexy: r(worst.Sexy), Neutral: r(worst.Neutral), Drawing: r(worst.Drawing) },
+  };
 }
 async function checkOwnCamera() {
   if (!nsfwModel || !localStream || peers.size === 0) return;   // only when others can see you
