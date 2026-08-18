@@ -30,6 +30,11 @@ intents — the app only makes REST calls and receives interactions over HTTPS.
 `applications.commands`, bot permission **Send Messages**. Open the generated
 URL and add it to the server.
 
+If Discord answers *"requires a code grant"*, go back to the **Bot** tab and turn
+**Requires OAuth2 Code Grant** off. That switch is for apps that run a full OAuth
+callback exchange; this one only receives interactions over HTTPS, so the plain
+bot invite is all it needs.
+
 **4. Get the channel id.** Discord Settings → Advanced → Developer Mode on, then
 right-click the moderation channel → Copy Channel ID. Same trick on your own
 name gives your **user id**.
