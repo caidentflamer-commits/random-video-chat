@@ -233,6 +233,124 @@ Not set: `STRIPE_UNBAN_LINK` (paid unban stays invisible until it is).
 The server accepts either the new (`SUPABASE_PUBLISHABLE_KEY`/`SECRET_KEY`) or
 classic (`ANON_KEY`/`SERVICE_KEY`) names.
 
+## Abuse hardening (2026-08-17)
+
+None of this was a break-in risk — no injection, no exposed keys, no path
+traversal (all checked). The exposure was **abuse and availability**, which is
+the right threat model for an anonymous video-chat site anyway.
+
+- **A report no longer bans on its own without limit.** It used to: one report
+  → instant, durable, IP-wide ban. A script running search → match → report →
+  next could burn a genuine user every few seconds, and since the only way back
+  in is the paid unban link, the griefing came with a price tag attached.
+  Now `mayBan()` gates it — `REPORTER_BAN_BUDGET` (5/hour per reporter IP) plus
+  a site-wide breaker at `GLOBAL_BAN_BUDGET` (30/hour) that pings the Discord
+  webhook when it trips. **Both throttle the ban, never the report**: a
+  throttled report is still logged, still webhooked, still in `/admin/reports`
+  (action reads `NOT banned — <reason>`), and the reporter still gets their
+  ack and still leaves the room. Verified over the wire: 5 bans land, the next
+  3 are refused, all 8 appear in the audit trail.
+- **`getClientIp` reads the X-Forwarded-For chain from the right, not the
+  left.** Proxies append, so `[0]` was whatever the *client* sent — a header
+  bought free ban evasion and, because bans are keyed on IP, the ability to get
+  an innocent address banned by claiming to be it. `TRUSTED_PROXY_HOPS`
+  (default 1) sets how far in from the right to read. **Check it on the real
+  host** with `/admin/whoami?key=ADMIN_KEY` — open it from a phone on cell data
+  and confirm `clientIp` is that phone’s public address. Every ban depends on
+  this being right.
+- **Flood control on the socket.** `maxPayload: 64 KB` (ws defaults to 100 MB
+  per frame), 8 concurrent sockets per IP, 40 connections/minute per IP, and a
+  per-socket token bucket (400 burst, 40/sec) sized for a 4-way mesh trickling
+  ICE across three peer connections. A 300-message burst survives; 600 gets the
+  socket closed with 1008.
+- **Socket `error` handlers — this one was already a live crash.** In Node an
+  `error` event with no listener is rethrown and kills the process, and `ws`
+  emits those on the socket. One oversized frame or abrupt reset from a single
+  visitor took the whole site down. Adding `maxPayload` made it trivial to
+  trigger, which is how it surfaced; `socket.on('error')`, `wss.on('error')`
+  and `server.on('clientError')` now cover it.
+- **Security headers on every response** (`setSecurityHeaders`). The real prize
+  is `frame-ancestors 'none'` — nobody gets to wrap a camera prompt in their
+  own page. The CSP needs `'unsafe-inline'` (the app is one inline `<script>`)
+  and `'unsafe-eval'` (TensorFlow.js), so **it is not an XSS backstop** — it
+  buys the frame rule, `object-src`, `base-uri`, and a fixed allowlist of
+  script hosts. If you add an external asset, add its origin here or it will
+  be blocked: jsdelivr (scripts), Google Fonts (`@import` in `clarity.css` —
+  googleapis for the stylesheet, gstatic for the files), `*.supabase.co`.
+
+## Report system rework (2026-08-17)
+
+**No report bans anyone by itself any more.** The old rule was one report →
+instant, durable, IP-wide ban, with a paid unban link as the only way back.
+Now a ban needs a *visual* reason AND a positive classification of frames the
+reporter’s own browser already sampled. Everything else queues for a human.
+
+- **`confirmedExplicit()` in `server.js` is the gate.** Visual reasons are
+  `VISUAL_REASONS` (currently just Nudity) plus anything prefixed `auto:`.
+  A visual reason with `verdict.explicit === true` can ban; a clean verdict, a
+  missing verdict, or any non-visual reason goes to `queueReview()` instead.
+  The `auto:` prefix on its own proves nothing — it is a string anyone can
+  type down the socket, which is why the verdict, not the label, is what
+  counts. Then `mayBan()`’s budgets still apply on top.
+- **The verdict is client-supplied and that is unavoidable.** This is a P2P
+  mesh with no SFU — not one video frame ever reaches the server, so there is
+  nothing here to verify against. The verdict raises the bar a long way past
+  one click; the rate budgets are what stop someone forging it wholesale.
+  `sanitizeVerdict()` clamps what arrives before it is ever stored or shown.
+- **Frames never leave the browser.** `retainFrame()` keeps the last
+  `RETAINED_FRAMES` (3) sampled canvases per peer, and `rememberStranger()`
+  carries them for up to `RECENT_STRANGER_MS` (30 s) after the person is gone.
+  In memory, in that tab, gone when it closes. Only numbers are transmitted.
+  **Do not "improve" this by uploading thumbnails to the review queue** — that
+  turns Olumie into a service storing images of strangers, frequently nude and
+  occasionally minors, with the legal duties that attach to holding them.
+- **`report-last` reports ONE person.** It used to ban everyone from the last
+  30 seconds, so a fast skipper took bystanders down with a single tap. The
+  flag now opens `openPicker()` — thumbnails of the last few strangers from
+  retained frames — and only the person picked is reported. `lastOpponents`
+  on the server carries a `peerId` so the pick maps to exactly one IP.
+- **Review queue: `/admin/review?key=ADMIN_KEY`** (add `&format=json` for the
+  raw list). Every report that did not earn a ban waits there with its reason,
+  note, scores and target IP — no images. Ban or dismiss from the page; the
+  action is a POST, so a prefetch or an `<img>` tag cannot fire it. Reasons and
+  notes are stranger-typed text rendered into HTML, so they go through `esc()`
+  — verified with a hostile note containing `<img onerror>` and `<script>`.
+
+### The model was silently blind, twice over
+
+Worth reading before touching `initModeration()`.
+
+1. `nsfwjs.load()` with no argument fetched a CloudFront bucket that no longer
+   resolves at all, so load threw, the catch set `moderationState = 'off'`, and
+   camera moderation had been failing open in production. Fixed by pinning
+   `NSFW_MODEL_URL` to a jsdelivr copy (already inside the CSP allowlist).
+2. Worse: with that URL restored on **tfjs 3.21**, the model loaded, reported
+   itself healthy, and returned the *same five numbers for every image* — grey,
+   random noise, stripes, all identical. Not a harness artifact: Chrome 148,
+   RTX 4070, WebGL2, weights intact, `matMul`/`conv2d` correct. The same model
+   on the CPU backend classified fine. **tfjs 4.22 + nsfwjs 4.2.1 fixes it** and
+   runs at ~12 ms a frame on WebGL.
+
+So `initModeration()` now runs `backendSeesImages()` — two images no working
+classifier could score identically — and only reports `on` if the scores differ.
+If WebGL lies it retries on CPU; if that also fails, moderation stays honestly
+`off`. Costs ~25 ms once. **Never delete this check**: a detector that says it
+is running while seeing nothing is worse than one that admits it is off.
+
+### Known, not fixed
+
+- **`@supabase/supabase-js@2` is an unpinned CDN tag.** Whatever jsdelivr
+  resolves `@2` to runs on the site with full access to the page. Pin the exact
+  version and add an SRI hash.
+- **`ADMIN_KEY` rides in a query string**, so it lands in access logs and
+  Referer headers — the same thing `/visit` was deliberately built to avoid.
+  It is now on `/admin/review` too.
+- **The review queue is in memory** (`MAX_REVIEW` 500) and empties on deploy.
+  Reports themselves are durable in Supabase via `dbInsertReport`; the pending
+  decisions are not. If a deploy lands mid-triage, the queue is gone.
+- **Only Nudity is a visual reason.** Under 18 is the one that most deserves
+  automation and least admits it — no classifier here estimates age.
+
 ## Current status
 
 **Everything a launch needs is live and verified** — details of each feature are

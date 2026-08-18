@@ -22,9 +22,19 @@ the trail to do that.
   with me across Next", nothing more.
 - **Chat link filter** — links are blocked client-side and stripped server-side
   (anti-scam).
-- **Reports & bans** — anyone can report a peer; that bans them by IP (in-memory,
-  resets on restart) and disconnects them. "Report last" covers someone you just
-  skipped, for a short grace window.
+- **Reports & bans** — a report never bans on its own. It always disconnects
+  the pair and is always recorded. A **ban** additionally requires a visual
+  reason (Nudity, or an `auto:` detection) *and* a positive classification of
+  frames the reporter’s own browser already sampled — plus room in the
+  reporter’s ban budget (5/hour) and the site-wide breaker (30/hour).
+  Everything else — Harassment, Under 18, Spam or scam, Something else, and any
+  visual report that came back clean — waits at **/admin/review?key=ADMIN_KEY**
+  for a human. "Report last" now shows thumbnails of the last few strangers and
+  reports **only the one picked**; it used to ban the whole batch.
+
+  Those thumbnails never leave the browser. Frames are held in the reporter’s
+  tab for 30s and only a verdict made of numbers is transmitted — no image is
+  stored on any server, deliberately. See the CSAM note below for why.
 
 ## If a report involves a minor
 
