@@ -51,6 +51,24 @@ the trail to do that.
   tab for 30s and only a verdict made of numbers is transmitted — no image is
   stored on any server, deliberately. See the CSAM note below for why.
 
+## Picking the thresholds
+
+`EXPLICIT_THRESHOLD` (0.60) and `SEXY_THRESHOLD` (0.85) came from nsfwjs, not
+from measurement. To check them against reality, open **olumie.chat/#calibrate**
+on a phone or a laptop: the camera starts without entering matchmaking and a
+live readout shows what your own face and room actually score.
+
+Read the **peak** column, not `now` — a false positive comes from the worst
+frame in a few minutes, not the current one. Tap the box to reset peaks between
+poses. Do the innocent-but-awkward things: dim room, backlit window, changing a
+shirt, someone walking past. If your worst honest moment sits near 0.15 there is
+plenty of headroom; if something ordinary reaches 0.4, raise
+`TRIPS_BEFORE_ACTION` rather than the threshold — noise is uncorrelated between
+frames and real content is not, so persistence is the stronger filter.
+
+The overlay is invisible without the hash and reads only your own local video:
+no peers, no reports, no side effects for anyone else.
+
 ## If a report involves a minor
 
 Reference for the moment it's needed, not a task. In the US, a service that

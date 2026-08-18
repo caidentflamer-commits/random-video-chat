@@ -149,6 +149,12 @@
   /* Phone-only controls. Desktop keeps the permanent chat panel and the
      per-tile report flag, so neither of these has anything to do there. */
   #chatBtn, #reportBtn { display: none; }
+  #calibrate-box {
+    position:fixed; top:calc(8px + env(safe-area-inset-top)); left:8px; z-index:9999;
+    background:rgba(0,0,0,.82); color:#7ee787; padding:9px 11px; border-radius:8px;
+    font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    white-space:pre; cursor:pointer; -webkit-user-select:none; user-select:none;
+  }
   .picker-choice {
     display:flex; flex-direction:column; align-items:center; gap:6px;
     padding:8px; border-radius:var(--radius-md); border:1px solid var(--line);
@@ -1217,7 +1223,7 @@ async function initLocalMedia() {
   els.local.srcObject = localStream; show(els.localPlaceholder, false);
   // Add tracks to any peers created before media was ready.
   peers.forEach(({ pc }) => { try { localStream.getTracks().forEach((t) => { if (!pc.getSenders().some((s) => s.track === t)) pc.addTrack(t, localStream); }); } catch {} });
-  syncMediaButtons(); initModeration(); return true;
+  syncMediaButtons(); initModeration(); initCalibration(); return true;
 }
 function syncMediaButtons() {
   const a = localStream && localStream.getAudioTracks()[0], v = localStream && localStream.getVideoTracks()[0];
@@ -1249,6 +1255,51 @@ async function initModeration() {
   } catch (err) { console.warn('Moderation disabled:', err); nsfwModel = null; moderationState = 'off'; }
   updateShield();
 }
+// --- Calibration overlay (olumie.chat/#calibrate) --------------------------
+// EXPLICIT_THRESHOLD and SEXY_THRESHOLD were inherited from nsfwjs, not chosen.
+// The only honest way to pick them is to watch what your OWN camera scores while
+// you do ordinary things — dim room, backlit window, changing a shirt — and see
+// how much headroom is left before the trip line.
+//
+// Behind a hash so no visitor ever sees it, and it reads nothing but your local
+// video: no peers, no reporting, no side effects on anyone. The peak column is
+// the one that matters, since a false positive comes from the worst frame in a
+// few minutes rather than the current one; tap the box to reset the peaks
+// between poses.
+const CALIBRATING = /(^|[#&])calibrate\b/i.test(location.hash || '');
+let calTimer = null;
+function initCalibration() {
+  if (!CALIBRATING || calTimer) return;
+  const box = document.createElement('div');
+  box.id = 'calibrate-box';
+  box.textContent = 'starting…';
+  document.body.appendChild(box);
+  const peak = {};
+  box.addEventListener('click', () => { Object.keys(peak).forEach((k) => delete peak[k]); });
+  const c = document.createElement('canvas'); c.width = 224; c.height = 224;
+  const ctx = c.getContext('2d');
+  const f = (n) => (n || 0).toFixed(3);
+  calTimer = setInterval(async () => {
+    if (!nsfwModel) { box.textContent = moderationState === 'off' ? 'moderation OFF\nmodel did not load' : 'loading model…'; return; }
+    const v = els.local;
+    if (!v || v.readyState < 2) { box.textContent = 'camera is off\npress Start'; return; }
+    ctx.drawImage(v, 0, 0, 224, 224);
+    let sc;
+    try { sc = await classifyCanvas(c); } catch { return; }
+    const ph = (sc.Porn || 0) + (sc.Hentai || 0);
+    peak.ph = Math.max(peak.ph || 0, ph);
+    peak.sexy = Math.max(peak.sexy || 0, sc.Sexy || 0);
+    const trip = ph >= EXPLICIT_THRESHOLD || (sc.Sexy || 0) >= SEXY_THRESHOLD;
+    box.textContent =
+      '             now   peak\n' +
+      'Porn+Hentai  ' + f(ph) + ' ' + f(peak.ph) + '  trips at ' + EXPLICIT_THRESHOLD + '\n' +
+      'Sexy         ' + f(sc.Sexy) + ' ' + f(peak.sexy) + '  trips at ' + SEXY_THRESHOLD + '\n' +
+      'Neutral      ' + f(sc.Neutral) + '\n' +
+      (trip ? '>>> WOULD TRIP <<<' : 'clear') + '   tap to reset';
+    box.style.color = trip ? '#ff6b6b' : '#7ee787';
+  }, 700);
+}
+
 // Each tick: check your own camera, plus one remote peer (round-robin to bound CPU).
 async function moderationTick() { await checkOwnCamera(); await checkOneRemote(); }
 // Two images a working classifier cannot possibly score identically. If the
@@ -1810,7 +1861,10 @@ function initAgeGate() {
 // On a phone the idle screen IS your camera, so it's acquired once the gate is
 // accepted rather than at Start. Desktop keeps prompting on the first gesture —
 // its layout doesn't need the preview to be there.
-function startStageCamera() { if (isPhone()) initLocalMedia(); }
+// Desktop normally waits for Start before touching the camera. Calibrating is
+// not a call, so bring it up immediately — the whole point is to sit and watch
+// your own numbers without entering matchmaking.
+function startStageCamera() { if (isPhone() || CALIBRATING) initLocalMedia(); }
 els.genderChoose.querySelectorAll('.c-chip').forEach((chip) => chip.addEventListener('click', () => {
   els.genderChoose.querySelectorAll('.c-chip').forEach((c) => c.classList.remove('is-selected'));
   chip.classList.add('is-selected');
