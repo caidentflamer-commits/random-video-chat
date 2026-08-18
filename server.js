@@ -966,13 +966,14 @@ function decideReview(id, action, who) {
   if (!item) return { ok: false, text: `#${id} is gone — the queue empties on deploy.` };
   if (item.status !== 'open') return { ok: false, text: `#${id} was already ${item.status}.` };
   if (action === 'ban') {
+    if (!banIp(item.targetIp, `review #${item.id}: ${item.reason || 'manual'}`, null)) {
+      return { ok: false, text: `\`${item.targetIp}\` is on the exempt list — not banned.` };
+    }
     item.status = 'banned';
     // banSocket() is what normally counts a ban, and it only runs for someone
     // still connected. A decision made from the queue an hour later has nobody
     // to disconnect, so count it here or the number quietly under-reports.
     bump('bans');
-    bannedIps.add(item.targetIp);
-    dbInsertBan(item.targetIp, `review #${item.id}: ${item.reason || 'manual'}`);
     // countIt=false: already counted above, and this is the same ban.
     wss.clients.forEach((c) => { if (c.ip === item.targetIp && c.readyState === c.OPEN) banSocket(c, false); });
   } else if (action === 'dismiss') {
@@ -1291,7 +1292,45 @@ function mayBan(reporterIp, cost) {
   return { ok: true };
 }
 
+// Two lists, because they cover two different moments.
+//
+// BAN_EXEMPT_USER_IDS is the precise one — a Supabase user id, already verified
+// server-side by supabase.auth.getUser(), so it follows you across your laptop,
+// your phone and any network. But it is useless once you are already banned:
+// the ban is enforced when the socket connects, before anyone has authenticated.
+//
+// BAN_EXEMPT_IPS is what gets you back through the door, and it is the one to be
+// careful with. On cell data you are usually behind CGNAT sharing an address
+// with thousands of strangers — exempt that and you have quietly made a chunk of
+// a carrier unbannable. Home IP here; use the user-id list for mobile.
+const listFromEnv = (name) => String(process.env[name] || '').split(',').map((x) => x.trim()).filter(Boolean);
+function ipExempt(ip) { return listFromEnv('BAN_EXEMPT_IPS').includes(ip); }
+function socketExempt(socket) {
+  if (!socket) return false;
+  if (ipExempt(socket.ip)) return true;
+  return !!socket.userId && listFromEnv('BAN_EXEMPT_USER_IDS').includes(socket.userId);
+}
+
+// Every path that can ban goes through here — report, report-last, and a
+// decision from the queue. One gate, so a fourth path added later cannot
+// silently skip the check.
+function banIp(ip, reason, socket) {
+  if (ipExempt(ip) || socketExempt(socket)) {
+    const who = socket && socket.userId ? ' user ' + socket.userId : '';
+    console.warn('BAN SKIPPED (exempt) ' + ip + who + ' — would have been: ' + reason);
+    return false;
+  }
+  bannedIps.add(ip);
+  dbInsertBan(ip, reason);
+  return true;
+}
+
 function banSocket(socket, countIt) {
+  // Every caller already went through banIp(), so this is belt and braces —
+  // but this is the function whose name says "ban this person", and it adds to
+  // bannedIps itself. Anyone reaching for it directly in future should not be
+  // able to bypass the exemption by accident.
+  if (socketExempt(socket)) { console.warn('BAN SKIPPED (exempt) ' + socket.ip + ' — banSocket called directly'); return; }
   if (countIt !== false) bump('bans');
   bannedIps.add(socket.ip);
   console.log(`Banned IP ${socket.ip} (${socket.peerId})`);
@@ -1347,14 +1386,15 @@ wss.on('connection', (socket, req) => {
   }
   socket.counted = true;
 
-  if (bannedIps.has(socket.ip)) {
+  // Only the IP list can help here — nobody has authenticated yet.
+  if (bannedIps.has(socket.ip) && !ipExempt(socket.ip)) {
     send(socket, { type: 'banned', unban: unbanOffer(socket.ip) || undefined });
     return socket.close();
   }
   // Durable ban check (survives restarts). Fast in-memory check above covers the
   // common case; this catches bans persisted before this process started.
   dbIsBanned(socket.ip).then((banned) => {
-    if (banned && socket.readyState === socket.OPEN) { bannedIps.add(socket.ip); send(socket, { type: 'banned', unban: unbanOffer(socket.ip) || undefined }); socket.close(); }
+    if (banned && !ipExempt(socket.ip) && socket.readyState === socket.OPEN) { bannedIps.add(socket.ip); send(socket, { type: 'banned', unban: unbanOffer(socket.ip) || undefined }); socket.close(); }
   });
   console.log(`Connected ${socket.peerId} (${socket.ip})`);
   if (wss.clients.size > stats.peakOnline) stats.peakOnline = wss.clients.size;
@@ -1528,10 +1568,9 @@ wss.on('connection', (socket, req) => {
           action: gate.ok ? 'banned' : `NOT banned — ${gate.reason}`,
         });
         const p = socket.party;
-        if (gate.ok) {
-          dbInsertBan(target.ip, reason);   // durable ban
+        if (gate.ok && banIp(target.ip, reason, target)) {
           banSocket(target);
-        } else {
+        } else if (!gate.ok) {
           queueReview({ reason, note, targetIp: target.ip, target: target.peerId, reporterIp: socket.ip, reporter: socket.peerId, verdict: check.verdict || null, why: gate.reason });
         }
         // The reporter leaves the room either way. A throttled ban is our
@@ -1553,13 +1592,13 @@ wss.on('connection', (socket, req) => {
         const note = String(msg.note || '').slice(0, 200);
         const check = confirmedExplicit(msg);
         const gate = check.ban ? mayBan(socket.ip, 1) : { ok: false, reason: check.why };
-        if (gate.ok) { bannedIps.add(chosen.ip); dbInsertBan(chosen.ip, reason || 'report-last'); }
+        const banned = gate.ok && banIp(chosen.ip, reason || 'report-last', null);
         logReport({
           kind: 'report-last', reporter: socket.peerId, reporterIp: socket.ip, target: chosen.peerId,
           targetIp: chosen.ip, reason, note,
           action: gate.ok ? 'banned' : `NOT banned — ${gate.reason}`,
         });
-        if (gate.ok) wss.clients.forEach((c) => { if (c.ip === chosen.ip && c.readyState === c.OPEN) banSocket(c); });
+        if (banned) wss.clients.forEach((c) => { if (c.ip === chosen.ip && c.readyState === c.OPEN) banSocket(c); });
         else queueReview({ reason, note, targetIp: chosen.ip, target: chosen.peerId, reporterIp: socket.ip, reporter: socket.peerId, verdict: check.verdict || null, why: gate.reason });
         send(socket, { type: 'report-ack', last: true });
         // Only the reported one is spent; the others stay reportable.

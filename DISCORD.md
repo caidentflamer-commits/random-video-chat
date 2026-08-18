@@ -49,6 +49,18 @@ name gives your **user id**.
 | `DISCORD_ADMIN_IDS` | Comma-separated user ids allowed to press the buttons |
 | `DISCORD_APP_ID` | Only needed to register the slash commands |
 
+Two more, unrelated to Discord but worth setting at the same time:
+
+| Variable | What it is |
+|---|---|
+| `BAN_EXEMPT_USER_IDS` | Supabase user ids that can never be banned |
+| `BAN_EXEMPT_IPS` | IPs that can never be banned, and can always connect |
+
+Set `BAN_EXEMPT_IPS` to your home IP only. On cell data you are usually behind
+CGNAT sharing one address with thousands of strangers, and exempting that makes
+a chunk of a carrier unbannable. Use the user-id list for mobile — it is a
+verified Supabase identity, so it follows you across networks.
+
 `DISCORD_ADMIN_IDS` is the important one. Everyone in the channel can *see* a
 card; only ids on this list can act on it. **Unset means nobody can act** — that
 is deliberate. The alternative is every member of the server holding the ban
