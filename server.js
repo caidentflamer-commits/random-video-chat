@@ -187,15 +187,10 @@ async function handleStripeEvent(event) {
           reason = (data && data[0] && data[0].reason) || '';
         } catch {}
       }
-      bannedIps.delete(ip);
-      if (supa) {
-        // Expire rather than delete: the ban history stays auditable.
-        const { error } = await supa.from('bans')
-          .update({ expires_at: new Date().toISOString() }).eq('ip', ip);
-        if (error) throw new Error(`unban expire failed for ${ip}: ${error.message}`);
-      }
-      bump('unbans');
-      console.log(`UNBAN paid: ${ip}${reason ? ` (was banned for: ${reason})` : ''}`);
+      const lifted = await unbanIp(ip, 'stripe');
+      // A paid unban that cannot be applied must fail loudly — they have been
+      // charged, so a silent no-op is money taken for nothing.
+      if (!lifted.ok && !/was not banned/.test(lifted.text)) throw new Error(`unban failed for ${ip}: ${lifted.text}`);
       const hook = process.env.REPORT_WEBHOOK_URL;
       if (hook && typeof fetch === 'function') {
         try { fetch(hook, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: `💰 Paid unban: ${ip}${reason ? ` — was banned for: **${reason}**` : ''}` }) }).catch(() => {}); } catch {}
@@ -212,6 +207,7 @@ async function handleStripeEvent(event) {
     if (error) throw new Error(`profiles upsert failed for user ${userId}: ${error.message}`);
     // Without a customer id the cancel path below can never find this row again.
     if (!s.customer) console.warn(`stripe: no customer on session for ${userId} — cancel will not be able to match them`);
+    bump('subs');
     console.log(`Premium ON: ${userId} (customer ${s.customer || 'none'})`);
     // A conversion a creator gets paid for. The durable record is the profiles
     // row itself (referred_by + is_premium); this is the visible ping so a
@@ -235,7 +231,7 @@ async function handleStripeEvent(event) {
       .update({ is_premium: false }).eq('stripe_customer_id', customer).select('id');
     if (error) throw new Error(`premium-off update failed for customer ${customer}: ${error.message}`);
     if (!data || !data.length) console.warn(`stripe: no profile matched customer ${customer} — premium NOT cleared`);
-    else console.log(`Premium OFF for customer ${customer} → user ${data.map((r) => r.id).join(',')}`);
+    else { bump('subsOff'); console.log(`Premium OFF for customer ${customer} → user ${data.map((r) => r.id).join(',')}`); }
   }
 }
 async function dbInsertBan(ip, reason) {
@@ -418,6 +414,17 @@ const server = http.createServer((req, res) => {
       if (body.type === 2) {                                                 // APPLICATION_COMMAND
         const name = (body.data && body.data.name) || '';
         if (name === 'stats') return say(discordStatsText());
+        if (name === 'unban') {
+          const opt = ((body.data && body.data.options) || []).find((o) => o.name === 'ip');
+          const ip = opt && String(opt.value || '').trim();
+          if (!ip) return say('Give me an IP: `/unban ip:1.2.3.4`');
+          // Answer inside Discord's 3s window, then report the outcome as a
+          // follow-up — this one awaits Supabase, unlike the button handlers.
+          unbanIp(ip, user.username || user.id).then((out) => {
+            discordSend(body.channel_id, { content: (out.ok ? '✅ ' : '⚠️ ') + out.text + ' — by ' + (user.username || user.id) });
+          });
+          return say('Working on `' + ip + '`…');
+        }
         if (name === 'queue') {
           const open = reviewQueue.filter((r) => r.status === 'open').slice().reverse();
           if (!open.length) return say('Queue is empty.');
@@ -503,6 +510,15 @@ const server = http.createServer((req, res) => {
     });
   }
 
+  // How busy it is, for the idle screen. Public and unauthenticated on purpose
+  // — it is the same number the page shows anyone. `online` is null below
+  // MIN_ONLINE_SHOWN, and the client renders nothing at all in that case.
+  // Costs nothing: no counters move, no bodies are read, no visit is recorded.
+  if (urlPath === '/pulse') {
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    return res.end(JSON.stringify({ online: publicOnline() }));
+  }
+
   // Public client config (Supabase URL + anon key). Empty until env is set.
   if (urlPath === '/config') {
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
@@ -531,7 +547,10 @@ const server = http.createServer((req, res) => {
     req.on('data', (c) => { body += c; if (body.length > 1000) req.destroy(); });
     req.on('end', () => {
       try { countVisitor(JSON.parse(body).vid); } catch {}
-      res.writeHead(204); res.end();
+      // Answers with the online count as well, so the idle screen has a number
+      // on first paint instead of waiting out a poll interval. Was a bare 204.
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ online: publicOnline() }));
     });
     return;
   }
@@ -577,9 +596,22 @@ const server = http.createServer((req, res) => {
   // The review queue as JSON, plus the POST that acts on an entry. The Discord
   // buttons are the normal way in; this is the same decision by curl. It stays a
   // POST so no prefetch, link preview or <img> in a chat can fire it.
-  if (urlPath === '/admin/review' || urlPath === '/admin/review/act') {
+  if (urlPath === '/admin/review' || urlPath === '/admin/review/act' || urlPath === '/admin/unban') {
     const q = new URLSearchParams((req.url.split('?')[1] || ''));
     if (!adminKeyOk(req, q)) { res.writeHead(403); return res.end('Forbidden'); }
+    if (urlPath === '/admin/unban') {
+      if (req.method !== 'POST') { res.writeHead(405); return res.end('POST only'); }
+      const chunks = [];
+      req.on('data', (c) => { chunks.push(c); if (chunks.length > 50) req.destroy(); });
+      req.on('end', async () => {
+        let body = {};
+        try { body = JSON.parse(Buffer.concat(chunks).toString() || '{}'); } catch {}
+        const out = await unbanIp(body.ip, 'curl');
+        res.writeHead(out.ok ? 200 : 400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(out));
+      });
+      return;
+    }
     if (urlPath === '/admin/review/act') {
       if (req.method !== 'POST') { res.writeHead(405); return res.end('POST only'); }
       const chunks = [];
@@ -858,6 +890,25 @@ const stats = {
   visits: 0, people: 0, returning: 0, gate: 0, starts: 0, sessions: 0, teamups: 0,
   skips: 0, stops: 0, mediaOk: 0, mediaFail: 0, playBlocked: 0,
   reports: 0, bans: 0, unbans: 0, peakOnline: 0,
+  // Did the queue pay out, and how fast? `quiets` is how many searches hit the
+  // 45s dead end; `abandons` is how many gave up in the queue without ever
+  // meeting anyone. Those two are the failure modes matchRate can't show you —
+  // matchRate only counts the people it worked for.
+  // `searches` counts every trip through the queue, not just the ones a Start
+  // began — a skip is another search. It is the honest denominator for the two
+  // rates below; against `starts` they can exceed 100% for anyone who skips a
+  // lot, and a rate over 100% reads as a broken instrument.
+  searches: 0, quiets: 0, abandons: 0, waitMs: 0, waitCount: 0,
+  // Did they actually talk? A 100% matchRate with a six-second average call is
+  // a broken product, and nothing above would have said so. `fastEnds` counts
+  // calls over inside 5 seconds — the closest honest thing to "they took one
+  // look and left".
+  callSecs: 0, callsEnded: 0, longestCallSecs: 0, fastEnds: 0, chats: 0,
+  // Party Mode is the whole marketing wedge, and until now nothing counted
+  // whether anyone used it.
+  parties: 0, partyJoins: 0,
+  // Money.
+  subs: 0, subsOff: 0,
 };
 // Unique browsers. The client sends a random id it keeps in localStorage; we
 // hold the ids only to answer "have I seen this one before" and count. They're
@@ -876,6 +927,23 @@ function countVisitor(id) {
   stats.people++;
 }
 function bump(name, by) { if (Object.prototype.hasOwnProperty.call(stats, name)) stats[name] += (by || 1); }
+
+// ---- The public "N online" number -----------------------------------------
+// Open sockets, which is everyone who has entered the app this visit and still
+// has it open — searching, in a call, or sitting idle after one. Not "people in
+// calls". That's the honest reading of the number and the useful one: it says
+// how many people are here to meet, not how many are already busy.
+//
+// A visitor on the idle screen has NO socket yet (it opens at Start), so they
+// never count themselves — "3 online" means three other people.
+//
+// The threshold is applied HERE, on the server, not in the client: below it the
+// endpoint returns null and the real number never leaves the process. Otherwise
+// anyone could curl /pulse to find out exactly how empty it is, which is the one
+// fact this site must never publish. /admin/stats still reports the truth.
+const MIN_ONLINE_SHOWN = Math.max(1, parseInt(process.env.MIN_ONLINE_SHOWN || '3', 10));
+function onlineNow() { return wss ? wss.clients.size : 0; }
+function publicOnline() { const n = onlineNow(); return n >= MIN_ONLINE_SHOWN ? n : null; }
 // Percentages are the point — raw counters make you do arithmetic to answer
 // "is this bad?", and nobody does it.
 function statsSummary() {
@@ -883,7 +951,7 @@ function statsSummary() {
   const pct = (n, d) => (d > 0 ? Math.round((n / d) * 1000) / 10 : null);
   return {
     ...stats,
-    online: wss ? wss.clients.size : 0,
+    online: onlineNow(),
     // Against people, not page loads — reloads would flatter this otherwise.
     startRate: pct(stats.starts, stats.people),        // people → pressed Start
     returnRate: pct(stats.returning, stats.people + stats.returning),
@@ -893,6 +961,17 @@ function statsSummary() {
     mediaFailRate: pct(stats.mediaFail, media),        // ⚠ the TURN question
     // One merge per session, so this is NOT doubled the way matchRate is.
     teamUpRate: pct(stats.teamups, stats.sessions),    // matched → chose to stay together
+    // Queue health. quietRate is the share of searches that hit the dead end;
+    // avgWaitSecs only averages searches that DID match, so read them together —
+    // a low wait with a high quiet rate means "fast for the lucky ones".
+    quietRate: pct(stats.quiets, stats.searches),
+    abandonRate: pct(stats.abandons, stats.searches),
+    avgWaitSecs: stats.waitCount ? Math.round((stats.waitMs / stats.waitCount) / 100) / 10 : null,
+    // Call quality. avgCallSecs is the one number that says whether people are
+    // having a conversation or bouncing off each other.
+    avgCallSecs: stats.callsEnded ? Math.round(stats.callSecs / stats.callsEnded) : null,
+    fastEndRate: pct(stats.fastEnds, stats.callsEnded),  // ended inside 5s
+    chatsPerCall: stats.callsEnded ? Math.round((stats.chats / stats.callsEnded) * 10) / 10 : null,
   };
 }
 // A rollup into the logs every hour, so there's a history even though the
@@ -1008,16 +1087,195 @@ function discordSignatureOk(req, raw) {
   } catch (e) { console.warn('discord signature check failed:', e && e.message); return false; }
 }
 
+// A number that may legitimately have no answer yet prints as an em dash, not
+// as 0 — "no calls have ended" and "calls average zero seconds" are different
+// facts and only one of them is alarming.
+const statNum = (v, suffix) => (v == null ? '—' : v + (suffix || ''));
+const statDur = (s) => (s == null ? '—' : s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`);
+
 function discordStatsText() {
   const st = statsSummary();
   const open = reviewQueue.filter((r) => r.status === 'open').length;
   return [
     `**Online** ${st.online}  ·  **Peak** ${st.peakOnline}`,
     `**Page loads** ${st.visits}  ·  **Browsers** ${st.people}  ·  **Started** ${st.starts}${st.startRate == null ? '' : ` (${st.startRate}%)`}`,
-    `**Sessions** ${st.sessions}  ·  **Skips** ${st.skips}  ·  **Reports** ${st.reports}  ·  **Bans** ${st.bans}`,
-    `**Queue** ${open} waiting  ·  **Banned IPs held** ${bannedIps.size}`,
+    `**Sessions** ${st.sessions}  ·  **Skips** ${st.skips}  ·  **Stops** ${st.stops}`,
+    `**Searches** ${st.searches}  ·  **Avg wait** ${statNum(st.avgWaitSecs, 's')}  ·  **Quiet dead ends** ${st.quiets} (${statNum(st.quietRate, '%')})  ·  **Gave up waiting** ${st.abandons}`,
+    `**Avg call** ${statDur(st.avgCallSecs)}  ·  **Longest** ${statDur(st.longestCallSecs)}  ·  **Ended <5s** ${statNum(st.fastEndRate, '%')}  ·  **Chats/call** ${statNum(st.chatsPerCall)}`,
+    `**Rooms** ${st.parties} made / ${st.partyJoins} joined  ·  **Stayed together** ${st.teamups}`,
+    `**Reports** ${st.reports}  ·  **Bans** ${st.bans}  ·  **Queue** ${open} waiting  ·  **Banned IPs held** ${bannedIps.size}`,
+    `**Subs** ${st.subs} on / ${st.subsOff} off  ·  **Paid unbans** ${st.unbans}`,
     `_counting since ${new Date(st.since).toUTCString()} — resets on deploy_`,
   ].join('\n');
+}
+
+// ---- Live stats board ------------------------------------------------------
+// Reading the numbers shouldn't mean typing a command and getting a snapshot
+// that's stale the moment it renders. The bot posts ONE message and edits it in
+// place on a timer, so a pinned board updates itself while you watch. Editing a
+// message notifies nobody, so this is silent no matter how often it runs.
+//
+// The cadence follows the site: every 30s while anyone is online, every 5
+// minutes when it's empty. Nothing is happening on an empty network, and this
+// way the API calls land when the numbers are actually moving.
+//
+// Channel: DISCORD_STATS_CHANNEL_ID if set, else the moderation channel. Worth
+// setting — a board that rewrites itself every 30s in the channel where reports
+// arrive will keep shoving the cards you need to act on up the screen.
+const BOARD_MARKER = 'olumie-live-stats';
+const BOARD_FAST_MS = 30000, BOARD_SLOW_MS = 300000;
+const statsChannel = () => process.env.DISCORD_STATS_CHANNEL_ID || process.env.DISCORD_CHANNEL_ID;
+let boardMessageId = null, boardFails = 0, boardTimer = null, boardSlow = false;
+
+const discordAuth = () => ({ 'Content-Type': 'application/json', Authorization: `Bot ${process.env.DISCORD_BOT_TOKEN}` });
+
+// Deliberately NOT discordSend(): that one returns a boolean and the report
+// cards depend on it. The board needs the message id back, so it gets its own
+// call rather than changing what the moderation path returns.
+async function discordPost(channelId, payload) {
+  try {
+    const r = await fetch(`${DISCORD_API}/channels/${channelId}/messages`, {
+      method: 'POST', headers: discordAuth(), body: JSON.stringify(payload),
+    });
+    if (!r.ok) { console.error(`discord board post failed ${r.status}: ${(await r.text()).slice(0, 200)}`); return null; }
+    return await r.json();
+  } catch (e) { console.error('discord board post error:', e && e.message); return null; }
+}
+async function discordEdit(channelId, messageId, payload) {
+  try {
+    const r = await fetch(`${DISCORD_API}/channels/${channelId}/messages/${messageId}`, {
+      method: 'PATCH', headers: discordAuth(), body: JSON.stringify(payload),
+    });
+    return r.ok;
+  } catch { return false; }
+}
+async function discordDelete(channelId, messageId) {
+  try { await fetch(`${DISCORD_API}/channels/${channelId}/messages/${messageId}`, { method: 'DELETE', headers: discordAuth() }); } catch {}
+}
+
+// Find boards left behind by earlier deploys, so a restart adopts the existing
+// message instead of leaving a graveyard of frozen ones. Needs the bot to have
+// Read Message History; if it doesn't, this returns null and we just post a
+// fresh board — degraded, not broken.
+async function findExistingBoards(channelId) {
+  try {
+    const r = await fetch(`${DISCORD_API}/channels/${channelId}/messages?limit=50`, { headers: discordAuth() });
+    if (!r.ok) return null;
+    const msgs = await r.json();
+    if (!Array.isArray(msgs)) return null;
+    return msgs.filter((m) => m && m.embeds && m.embeds[0] && m.embeds[0].footer &&
+      String(m.embeds[0].footer.text || '').startsWith(BOARD_MARKER));
+  } catch { return null; }
+}
+
+function statsBoardEmbed() {
+  const st = statsSummary();
+  const open = reviewQueue.filter((r) => r.status === 'open').length;
+  const field = (name, lines) => ({ name, value: lines.join('\n'), inline: true });
+  return {
+    title: 'Olumie — live',
+    description: st.online > 0
+      ? `🟢 **${st.online} online** right now  ·  peak ${st.peakOnline}`
+      : `⚫ nobody on right now  ·  peak ${st.peakOnline}`,
+    color: st.online > 0 ? 0x3fcf6b : 0x3d4354,
+    fields: [
+      field('Arriving', [
+        `Page loads **${st.visits}**`,
+        `Browsers **${st.people}**`,
+        `Returning **${st.returning}** (${statNum(st.returnRate, '%')})`,
+      ]),
+      field('Starting', [
+        `Pressed Start **${st.starts}** (${statNum(st.startRate, '%')})`,
+        `Sessions **${st.sessions}**`,
+        `Match rate ${statNum(st.matchRate, '%')}`,
+      ]),
+      field('Queue', [
+        `Searches **${st.searches}**  ·  avg wait ${statNum(st.avgWaitSecs, 's')}`,
+        `Hit "it's quiet" **${st.quiets}** (${statNum(st.quietRate, '%')})`,
+        `Gave up waiting **${st.abandons}**`,
+      ]),
+      field('Calls', [
+        `Avg length ${statDur(st.avgCallSecs)}`,
+        `Longest ${statDur(st.callsEnded ? st.longestCallSecs : null)}`,
+        `Ended <5s ${statNum(st.fastEndRate, '%')}`,
+        `Chats per call ${statNum(st.chatsPerCall)}`,
+      ]),
+      field('Together', [
+        `Rooms made **${st.parties}**`,
+        `Codes used **${st.partyJoins}**`,
+        `Stayed together **${st.teamups}** (${statNum(st.teamUpRate, '%')})`,
+      ]),
+      field('Leaving', [
+        `Skips **${st.skips}**`,
+        `Stops **${st.stops}**`,
+      ]),
+      field('Connection', [
+        `Media OK **${st.mediaOk}**`,
+        `Media failed **${st.mediaFail}** (${statNum(st.mediaFailRate, '%')})`,
+        `Autoplay blocked **${st.playBlocked}**`,
+      ]),
+      field('Safety', [
+        `Reports **${st.reports}**`,
+        `Bans **${st.bans}**`,
+        `Review queue **${open}**`,
+        `IPs held **${bannedIps.size}**`,
+      ]),
+      field('Money', [
+        `Subscribed **${st.subs}**`,
+        `Cancelled **${st.subsOff}**`,
+        `Paid unbans **${st.unbans}**`,
+      ]),
+    ],
+    // The marker is how a restart finds this message again — don't drop it.
+    footer: { text: `${BOARD_MARKER} · counting since ${new Date(st.since).toUTCString()} — resets on deploy` },
+    // Discord renders this as a live "x minutes ago", so a board that has
+    // stopped updating says so by itself.
+    timestamp: new Date().toISOString(),
+  };
+}
+
+async function tickStatsBoard() {
+  const ch = statsChannel();
+  const payload = { embeds: [statsBoardEmbed()] };
+  let ok = false;
+  if (boardMessageId) {
+    ok = await discordEdit(ch, boardMessageId, payload);
+    if (!ok) boardMessageId = null;   // deleted by hand, or the channel changed
+  }
+  if (!boardMessageId) {
+    const msg = await discordPost(ch, payload);
+    if (msg && msg.id) { boardMessageId = msg.id; ok = true; }
+  }
+  // Exponential backoff on failure rather than hammering a dead API every 30s.
+  boardFails = ok ? 0 : Math.min(boardFails + 1, 5);
+  boardSlow = onlineNow() === 0 && boardFails === 0;
+  const base = boardSlow ? BOARD_SLOW_MS : BOARD_FAST_MS;
+  boardTimer = setTimeout(tickStatsBoard, base * Math.pow(2, boardFails));
+  boardTimer.unref?.();
+}
+
+// The cadence is chosen at the end of a tick, so a board that went to sleep on
+// an empty site would stay asleep for five minutes after the first person
+// arrives — exactly the moment worth watching. A new socket wakes it.
+function wakeStatsBoard() {
+  if (!boardSlow || !boardTimer) return;
+  boardSlow = false;
+  clearTimeout(boardTimer);
+  boardTimer = setTimeout(tickStatsBoard, 2000);
+  boardTimer.unref?.();
+}
+
+async function startStatsBoard() {
+  if (!discordReady()) return;
+  const ch = statsChannel();
+  const existing = await findExistingBoards(ch);
+  if (existing && existing.length) {
+    boardMessageId = existing[0].id;   // newest first, per Discord's ordering
+    // The rest are frozen boards from earlier deploys. A stale board showing
+    // numbers that will never move again is worse than no board.
+    for (const m of existing.slice(1)) await discordDelete(ch, m.id);
+  }
+  tickStatsBoard();
 }
 
 // ---- report audit trail ---------------------------------------------------
@@ -1204,6 +1462,12 @@ function leavePair(a, b) {
 function enqueue(party) {
   if (party.session || party.members.length === 0) return;
   searching = searching.filter((p) => p !== party);
+  // When this search began. Set on every enqueue, not just the first, because
+  // a skip starts a new wait. `waitingSince` below is a different thing — it is
+  // only set once the party actually joins the queue, so it misses instant
+  // matches, which are exactly the ones a wait average must include.
+  party.queuedAt = Date.now();
+  bump('searches');
 
   // Best compatible shared-interest match among waiting parties.
   let bestIdx = -1, bestScore = 0;
@@ -1253,15 +1517,22 @@ setInterval(() => {
   searching.forEach((p) => {
     if (!p.quietTold && now - (p.waitingSince || now) >= QUIET_AFTER_MS) {
       p.quietTold = true;
+      bump('quiets');
       p.members.forEach((m) => send(m, { type: 'quiet' }));
     }
   });
 }, 2000);
 
 function match(pA, pB) {
-  const session = { parties: [pA, pB] };
+  const session = { parties: [pA, pB], startedAt: Date.now() };
   pA.session = session; pB.session = session;
   searching = searching.filter((p) => p !== pA && p !== pB);
+  // How long each side waited for this. Cleared as it's counted so a party that
+  // gets matched twice can't have its first wait counted again.
+  [pA, pB].forEach((p) => {
+    if (!p.queuedAt) return;
+    stats.waitMs += session.startedAt - p.queuedAt; stats.waitCount++; p.queuedAt = 0;
+  });
 
   // Mesh: connect every cross-party pair (within-party pairs already connected).
   pA.members.forEach((a) => pB.members.forEach((b) => connectPair(a, b, false)));
@@ -1304,6 +1575,15 @@ function canTeamUp(socket) {
 function dissolveSession(session, reenqueue) {
   const [pA, pB] = session.parties;
   const now = Date.now();
+  // How long they actually talked. Counted once per session however it ended —
+  // skip, stop or disconnect — since "why it ended" is already in skips/stops.
+  if (session.startedAt) {
+    const secs = Math.round((now - session.startedAt) / 1000);
+    stats.callSecs += secs; stats.callsEnded++;
+    if (secs > stats.longestCallSecs) stats.longestCallSecs = secs;
+    if (secs < 5) stats.fastEnds++;
+    session.startedAt = 0;   // a double dissolve must not count twice
+  }
   // Drop the cross-party mesh connections and remember opponents for "Report last".
   pA.members.forEach((a) => pB.members.forEach((b) => {
     leavePair(a, b);
@@ -1396,6 +1676,36 @@ function banIp(ip, reason, socket) {
   return true;
 }
 
+// Until now the ONLY way out of a ban was to pay for it. Banning is one tap and
+// reversing it meant hand-editing Supabase, which is the wrong asymmetry to
+// have when a ban is a judgement call made in a hurry from a phone.
+//
+// Expires rather than deletes, matching the paid flow: the ban history stays
+// auditable, and "was banned, then unbanned by me" is a different fact from
+// "was never banned".
+async function unbanIp(ip, who) {
+  const target = String(ip || '').trim();
+  if (!target) return { ok: false, text: 'No IP given.' };
+  const wasInMemory = bannedIps.delete(target);
+  let reason = '', touched = 0;
+  if (supa) {
+    try {
+      const { data } = await supa.from('bans').select('reason').eq('ip', target)
+        .order('id', { ascending: false }).limit(1);
+      reason = (data && data[0] && data[0].reason) || '';
+      const { data: upd, error } = await supa.from('bans')
+        .update({ expires_at: new Date().toISOString() })
+        .eq('ip', target).is('expires_at', null).select('id');
+      if (error) return { ok: false, text: 'Database error: ' + error.message };
+      touched = (upd || []).length;
+    } catch (e) { return { ok: false, text: 'Database error: ' + (e && e.message) }; }
+  }
+  if (!wasInMemory && !touched) return { ok: false, text: '`' + target + '` was not banned.' };
+  bump('unbans');
+  console.log(`UNBAN by ${who || 'admin'}: ${target}${reason ? ` (was banned for: ${reason})` : ''}`);
+  return { ok: true, text: 'Unbanned `' + target + '`' + (reason ? ' — was banned for: ' + reason : ''), reason };
+}
+
 function banSocket(socket, countIt) {
   // Every caller already went through banIp(), so this is belt and braces —
   // but this is the function whose name says "ban this person", and it adds to
@@ -1469,6 +1779,7 @@ wss.on('connection', (socket, req) => {
   });
   console.log(`Connected ${socket.peerId} (${socket.ip})`);
   if (wss.clients.size > stats.peakOnline) stats.peakOnline = wss.clients.size;
+  wakeStatsBoard();   // someone showed up — stop idling the Discord board
 
   // In Node an 'error' event with no listener is rethrown and kills the
   // process — so a single oversized frame, protocol violation or abrupt reset
@@ -1498,6 +1809,7 @@ wss.on('connection', (socket, req) => {
         if (p.code) partiesByCode.delete(p.code);
         p.code = makeCode();
         partiesByCode.set(p.code, p);
+        bump('parties');
         send(socket, { type: 'party-created', code: p.code });
         break;
       }
@@ -1512,6 +1824,7 @@ wss.on('connection', (socket, req) => {
         socket.party = p;
         partiesByCode.delete(code);
         connectPair(p.members[0], p.members[1], true);
+        bump('partyJoins');   // a code that was actually used, not just created
         p.members.forEach((m) => send(m, { type: 'party-joined', size: 2 }));
         break;
       }
@@ -1593,6 +1906,7 @@ wss.on('connection', (socket, req) => {
       }
       case 'chat': {
         if (typeof msg.text === 'string' && msg.text.trim()) {
+          bump('chats');
           const clean = msg.text.slice(0, 500).replace(LINK_RE, '[link removed]');
           roomMembers(socket).forEach((m) => { if (m !== socket) send(m, { type: 'chat', from: socket.peerId, text: clean }); });
         }
@@ -1615,6 +1929,10 @@ wss.on('connection', (socket, req) => {
           const other = p.session.parties.find((x) => x !== p);
           dissolveSession(p.session, other ? [other] : []);   // this party goes idle; they re-search
         } else {
+          // Gave up in the queue without ever meeting anyone. Only counted if
+          // they were actually in it — Stop from an idle screen is not an
+          // abandon.
+          if (searching.includes(p)) bump('abandons');
           searching = searching.filter((x) => x !== p);        // leave the queue
         }
         p.members.forEach((m) => send(m, { type: 'stopped' }));  // both friends return together
@@ -1694,6 +2012,8 @@ server.listen(PORT, () => {
   // Mint before anyone asks, so the first Start of the day doesn't wait on
   // Cloudflare. No-op unless the key env vars are set.
   cloudflareTurn();
+  // Self-updating stats board in Discord. No-op unless the bot env vars are set.
+  startStatsBoard();
   console.log(`\n  Olumie is running!`);
   console.log(`  Open this in your browser:  http://localhost:${PORT}\n`);
   console.log(`  Tip: open it in TWO tabs (or two windows) to match with yourself.\n`);

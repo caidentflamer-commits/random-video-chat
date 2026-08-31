@@ -447,6 +447,10 @@
     <div class="center">
       <span class="c-badge c-badge--online is-hidden" id="connBadge"><span class="c-dot c-dot--live"></span> <span id="connTime">Connected · 00:00</span></span>
       <span class="c-badge is-hidden" id="searchingPill"><span class="c-spinner"></span> Looking for people…</span>
+      <!-- Idle only. Hidden entirely when the server says the count is below
+           the threshold — an empty room is never advertised, and the number is
+           never invented. -->
+      <span class="c-badge c-badge--online is-hidden" id="onlinePill"><span class="c-dot c-dot--live"></span> <span id="onlineText">0 online</span></span>
     </div>
     <div class="right">
       <button class="c-btn c-btn--secondary c-btn--sm is-hidden" id="authBtn">Sign in</button>
@@ -777,6 +781,7 @@ const VISUAL_REASONS = new Set(['Nudity']);
 const $ = (id) => document.getElementById(id);
 const els = {
   connBadge: $('connBadge'), connTime: $('connTime'), searchingPill: $('searchingPill'), shield: $('shield'),
+  onlinePill: $('onlinePill'), onlineText: $('onlineText'),
   leftTile: $('leftTile'), idlePanel: $('idlePanel'), idleDefault: $('idleDefault'), partyWaiting: $('partyWaiting'),
   partyCodeText: $('partyCodeText'), searchPanel: $('searchPanel'), searchTitle: $('searchTitle'), searchNote: $('searchNote'),
   remoteGrid: $('remoteGrid'),
@@ -860,10 +865,44 @@ if (visitorId) {
     fetch('/visit', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ vid: visitorId }), keepalive: true,
-    }).catch(() => {});
+    }).then((r) => r.json()).then((d) => setOnline(d.online)).catch(() => {});
   } catch {}
 }
 let phase = 'idle';                   // 'idle' | 'searching' | 'connected'
+
+// --- "N online" -----------------------------------------------------------
+// Social proof on the idle screen: the page currently gives a first-time
+// visitor no evidence either way, so they assume the place is empty.
+//
+// The server decides whether there is a number to show at all — it sends null
+// below its threshold, and this side never invents, rounds or embellishes one.
+// If the fetch fails the pill simply stays hidden.
+//
+// It rides the /visit response and a /pulse poll rather than the WebSocket
+// because the socket only opens at Start; opening it earlier just to carry
+// this would change what `starts` counts and quietly break startRate.
+let onlineCount = null, pulseTimer = null;
+const PULSE_MS = 20000;
+function setOnline(v) {
+  const n = (typeof v === 'number' && isFinite(v) && v > 0) ? Math.floor(v) : null;
+  if (n === onlineCount) return;
+  onlineCount = n;
+  if (n !== null) els.onlineText.textContent = n + ' online';
+  render();
+}
+async function pulse() {
+  try { setOnline((await (await fetch('/pulse', { cache: 'no-store' })).json()).online); } catch {}
+}
+// Polls only while idle AND the tab is being looked at — nothing to prove to a
+// background tab, and nobody reads the status bar mid-call. Driven from
+// render(), so phase changes turn it on and off without a second source of
+// truth about what's on screen.
+function pulseLoop() {
+  const want = phase === 'idle' && document.visibilityState === 'visible';
+  if (want && !pulseTimer) { pulse(); pulseTimer = setInterval(pulse, PULSE_MS); }
+  else if (!want && pulseTimer) { clearInterval(pulseTimer); pulseTimer = null; }
+}
+document.addEventListener('visibilitychange', pulseLoop);
 let nsfwModel = null, moderationState = 'off', tripCount = 0, strikes = 0, moderationTimer = null;
 let callStart = 0, callTimer = null, reportLastTimer = null, reportTarget = null;
 
@@ -895,6 +934,10 @@ function render() {
 
   show(els.connBadge, phase === 'connected');
   show(els.searchingPill, phase === 'searching');
+  // Idle only: mid-call the status bar belongs to the call, and while searching
+  // the spinner already owns that slot.
+  show(els.onlinePill, phase === 'idle' && onlineCount !== null);
+  pulseLoop();
   show(els.idleRules, phase === 'idle');
   show(els.connectedHelp, phase === 'connected');
   show(els.editInterests, phase === 'searching');

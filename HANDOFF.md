@@ -155,13 +155,57 @@ people together with a friend — or with a stranger you both chose to keep, via
   cancellation enabled). Failures now name themselves (PR #26): 401 expired
   session, 404 no subscription, 503 not set up, else Stripe's own error code.
 - **Support tip button:** hidden unless `SUPPORT_URL` (a constant in index.html) is set.
-- **Analytics (2026-08-09):** first-party, aggregate-only counters — no cookies, no
+- **Live "N online" (2026-08-23):** one badge in the status bar on the idle screen
+  — social proof, because the page previously gave a first-time visitor no
+  evidence either way and an empty-looking room is assumed empty. Three things
+  about it that are load-bearing:
+  **(1) The threshold is server-side.** Below `MIN_ONLINE_SHOWN` (default 3, env)
+  `GET /pulse` returns `{"online":null}` and the real number never leaves the
+  process — a client-side check would let anyone curl the endpoint to find out
+  exactly how empty it is. `/admin/stats` still reports the truth.
+  **(2) "Online" is open sockets** — everyone who entered the app this visit and
+  still has it open, searching or not. A visitor on the idle screen has no socket
+  yet, so they never count themselves: "3 online" means three *other* people.
+  **(3) It rides `POST /visit`'s response plus a 20s `/pulse` poll, NOT the
+  WebSocket** — the socket only opens at Start, and opening it earlier to carry
+  this would change what `starts` counts and silently break `startRate`, the
+  exact metric this feature exists to move. Polling stops when the tab is hidden
+  and resumes on `visibilitychange`. Never fake or embellish the number: a
+  fabricated count screenshotted next to an empty room is unrecoverable.
+- **Live stats board in Discord (2026-08-23):** the bot posts **one** message and
+  **edits it in place** on a timer, so a pinned board updates itself instead of
+  needing `/stats` typed at it. Edits notify nobody. Cadence follows the site:
+  30s while anyone is online, 5 min when empty, and a new socket **wakes** it
+  (otherwise a board that fell asleep on an empty site would miss the first
+  arrivals of a surge by up to five minutes). On restart it finds prior boards by
+  a marker in the embed footer, adopts the newest and deletes the rest — **don't
+  remove that footer marker**, it's the only handle. Needs the bot to have **Read
+  Message History** to adopt; without it, it just posts a fresh board. Optional
+  `DISCORD_STATS_CHANNEL_ID` puts it in its own channel — worth setting, since a
+  board rewriting itself every 30s in the moderation channel pushes the report
+  cards you need to act on up the screen. See `DISCORD.md`.
+- **Analytics (2026-08-09, extended 2026-08-23):** first-party, aggregate-only counters — no cookies, no
   third party, no per-visitor records, so **no consent banner** and the privacy
   policy stays short. Most of it the server already knew (matches, skips, reports);
   the client reports only what happens in the browser (`gate`, `mediaOk`,
   `mediaFail`, `playBlocked`) via a `stat` message on the existing socket, against
   a fixed whitelist.
-  **Read it with `/stats` in Discord**, or `GET /admin/stats?key=ADMIN_KEY` for
+  **2026-08-23 additions**, because the old set could not answer "is this any
+  good?" — only "did anyone show up?":
+  `searches` (every trip through the queue, not just Start presses),
+  `quiets` (hit the 45s dead end), `abandons` (gave up in the queue without ever
+  meeting anyone), `waitMs`/`waitCount` → **`avgWaitSecs`**,
+  `callSecs`/`callsEnded`/`longestCallSecs` → **`avgCallSecs`**,
+  `fastEnds` (call over inside 5s) → `fastEndRate`, `chats` → `chatsPerCall`,
+  `parties`/`partyJoins` (rooms made vs codes actually used — Party Mode is the
+  marketing wedge and nothing counted whether anyone used it), `subs`/`subsOff`.
+  ⚠ `quietRate` and `abandonRate` are **over `searches`, not `starts`** — against
+  `starts` they exceed 100% for anyone who skips a lot, and a rate over 100%
+  reads as a broken instrument. **`avgCallSecs` is the one to watch**: a perfect
+  `matchRate` with a six-second average call is a broken product, and nothing in
+  the original set would have said so.
+  **Read it on the live Discord board** (above — it updates itself), with
+  `/stats` in Discord, or `GET /admin/stats?key=ADMIN_KEY` for
   the raw JSON. The rendered page this used to serve is gone — see `DISCORD.md`.
   Same gate as `/admin/reports`. `ADMIN_KEY` **is set on Render** (2026-08-09).
   Without that key you still get an **hourly `STATS {...}` rollup in the Render
@@ -230,7 +274,10 @@ Set: `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SECRET_KEY`,
 Not set: `STRIPE_UNBAN_LINK` (paid unban stays invisible until it is).
 Not set yet: `DISCORD_BOT_TOKEN`, `DISCORD_CHANNEL_ID`, `DISCORD_PUBLIC_KEY`,
 `DISCORD_ADMIN_IDS`, `DISCORD_APP_ID` — the admin surface is inert until they are.
-See `DISCORD.md`. Optional: `TRUSTED_PROXY_HOPS` (defaults to 1).
+See `DISCORD.md`. Optional: `TRUSTED_PROXY_HOPS` (defaults to 1),
+`MIN_ONLINE_SHOWN` (defaults to 3 — below this the idle screen shows no count at
+all), `DISCORD_STATS_CHANNEL_ID` (defaults to `DISCORD_CHANNEL_ID` — where the
+self-updating stats board lives).
 `TURN_KEY_ID` + `TURN_KEY_API_TOKEN` **are** set (Cloudflare TURN live
 2026-08-10). `ADMIN_KEY` **is** set (2026-08-09).
 (`SUPPORT_URL` is **not** an env var — it's a constant at the top of

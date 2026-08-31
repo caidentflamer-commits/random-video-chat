@@ -27,8 +27,12 @@ bot; treat it like a password. It does **not** need any privileged gateway
 intents — the app only makes REST calls and receives interactions over HTTPS.
 
 **3. Invite it to your server.** OAuth2 → URL Generator → scopes `bot` and
-`applications.commands`, bot permission **Send Messages**. Open the generated
-URL and add it to the server.
+`applications.commands`, bot permissions **Send Messages** and **Read Message
+History**. Open the generated URL and add it to the server.
+
+Read Message History is only for the live stats board — it's how a restart finds
+the board it posted last time instead of leaving a dead one behind. Without it
+everything still works; you just collect a frozen board per deploy.
 
 If Discord answers *"requires a code grant"*, go back to the **Bot** tab and turn
 **Requires OAuth2 Code Grant** off. That switch is for apps that run a full OAuth
@@ -48,6 +52,7 @@ name gives your **user id**.
 | `DISCORD_PUBLIC_KEY` | General Information → Public Key |
 | `DISCORD_ADMIN_IDS` | Comma-separated user ids allowed to press the buttons |
 | `DISCORD_APP_ID` | Only needed to register the slash commands |
+| `DISCORD_STATS_CHANNEL_ID` | *Optional.* Channel for the self-updating stats board. Defaults to `DISCORD_CHANNEL_ID`; give it its own channel. |
 
 Two more, unrelated to Discord but worth setting at the same time:
 
@@ -93,14 +98,55 @@ a stale pair of tempting buttons.
 **No images, ever.** Frames stay in the reporter's browser; only numbers are
 transmitted. See `MODERATION.md` for why that line is not worth crossing.
 
+**A live stats board.** The bot posts **one** message and **edits it in place**
+on a timer, so the numbers change while you watch instead of going stale the
+moment `/stats` renders them. Pin it and it's a dashboard. Editing a message
+notifies nobody, so this is silent however often it runs.
+
+- **Cadence follows the site**: every 30s while anyone is online, every 5 minutes
+  when it's empty, and a new visitor **wakes** it within 2s. Without the wake, a
+  board that fell asleep on an empty site would miss the first arrivals of a
+  surge by up to five minutes — the exact moment worth watching.
+- **It survives deploys.** On boot it looks for prior boards by a marker in the
+  embed footer, **adopts the newest and deletes the rest**, so a restart doesn't
+  leave a graveyard of frozen boards. This needs the bot to have **Read Message
+  History** in that channel; without it the board still works, it just posts a
+  fresh one each deploy. The embed also carries a Discord timestamp, so a board
+  that has stopped updating says so by itself.
+- ⚠ **Don't remove the footer marker** (`olumie-live-stats · …`). It is the only
+  handle a restart has on the existing message.
+- **Give it its own channel** with `DISCORD_STATS_CHANNEL_ID`. It defaults to
+  `DISCORD_CHANNEL_ID`, but a board rewriting itself every 30s in the channel
+  where reports arrive keeps shoving the cards you need to act on up the screen.
+- If Discord is unreachable it backs off exponentially and logs the reason
+  (`discord board post failed <status>`), rather than hammering a dead API every
+  30 seconds. The site is unaffected either way.
+
 | Command | Does |
 |---|---|
-| `/stats` | Online, peak, page loads, browsers, sessions, skips, reports, bans, queue depth |
+| `/stats` | The whole set as a one-off snapshot: online, peak, funnel, queue health, call length, rooms, safety, money |
 | `/queue` | Reposts the waiting reports as fresh, actionable cards |
 | `/whoami` | Proxy-hop config, for checking `TRUSTED_PROXY_HOPS` |
+| `/unban` | Lift a ban — `/unban ip:1.2.3.4` |
 
 All three reply **ephemerally** — only you see the output, so the channel
 doesn't fill with numbers.
+
+## Unbanning
+
+`/unban ip:1.2.3.4` in Discord, or:
+
+```bash
+curl -s -X POST -H "X-Admin-Key: $ADMIN_KEY" -H "Content-Type: application/json" -d '{"ip":"1.2.3.4"}' https://olumie.chat/admin/unban
+```
+
+Before this the only exit from a ban was the **paid** link, so banning was one
+tap and reversing it meant hand-editing Supabase — the wrong asymmetry for a
+judgement call made in a hurry from a phone.
+
+It expires the ban row rather than deleting it, matching what the paid flow
+does: "banned, then unbanned" stays a different fact from "never banned".
+Unbanning something that is not banned is a 400, not a silent success.
 
 ## Still there for curl
 
