@@ -106,7 +106,11 @@ people together with a friend — or with a stranger you both chose to keep, via
   **LIVE MODE — taking real money since 2026-08-07.** Premium is $4.99/mo.
 - **Durable bans/reports:** written to Supabase when configured (confirmed
   `supabaseConnected: true`).
-- **Paid unban (2026-08-12) — BUILT, INERT until `STRIPE_UNBAN_LINK` is set:**
+- **Paid unban (2026-08-12) — LIVE.** `STRIPE_UNBAN_LINK` **is set** (confirmed
+  2026-08-31: `/config` serves an `unbanUrl`, so the banned screen is offering
+  the paid exit and the webhook path is reachable). This entry said "BUILT,
+  INERT" for longer than it was true — if you are auditing what takes money,
+  this counts alongside Premium.
   the banned screen offers "Remove the ban — $4.99" (a **one-time, payment-mode**
   Stripe Payment Link, separate from the Premium subscription link). The link is
   opened with `client_reference_id = 'unban_' + AES-GCM(ip)` — key derived from
@@ -119,8 +123,7 @@ people together with a friend — or with a stranger you both chose to keep, via
   the recorded ban reason, so a purchase worth a second look — e.g. an
   "Under 18" report — is visible for a manual re-ban. Counted as `unbans` on
   `/admin/stats`.
-  **To turn on:** Stripe (live) → create a one-time Product/price → Payment
-  Link → set `STRIPE_UNBAN_LINK` on Render. ⚠ Same price-in-two-places gotcha
+  ⚠ Same price-in-two-places gotcha
   as Premium: `UNBAN_PRICE` in `index.html` vs the real price on the link —
   change both in the same sitting. The banned-screen copy ("lifts this ban
   only… no refund") is the dispute defense; keep it if rewording.
@@ -270,10 +273,16 @@ Google STUN.
 ## Env vars on Render (config is read from env; app is inert without it)
 Set: `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SECRET_KEY`,
 `SUPABASE_JWKS_URL`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`,
-`STRIPE_PAYMENT_LINK`, `REPORT_WEBHOOK_URL`.
-Not set: `STRIPE_UNBAN_LINK` (paid unban stays invisible until it is).
-Not set yet: `DISCORD_BOT_TOKEN`, `DISCORD_CHANNEL_ID`, `DISCORD_PUBLIC_KEY`,
-`DISCORD_ADMIN_IDS`, `DISCORD_APP_ID` — the admin surface is inert until they are.
+`STRIPE_PAYMENT_LINK`, `REPORT_WEBHOOK_URL`, `STRIPE_UNBAN_LINK`.
+**Discord: set 2026-08-31** — `DISCORD_BOT_TOKEN`, `DISCORD_CHANNEL_ID`,
+`DISCORD_PUBLIC_KEY`, `DISCORD_ADMIN_IDS`, `DISCORD_APP_ID`, plus
+`DISCORD_STATS_CHANNEL_ID` for the live board. The admin surface is no longer
+inert. ⚠ Whether the board actually posted has **not** been confirmed from
+outside — nothing public reveals it, so `#live` in Discord is the only proof.
+⚠ **Several `DISCORD_*` keys already existed on Render as empty placeholders**,
+so adding them fresh is rejected as duplicate keys and the deploy is blocked.
+Edit the existing rows in place instead of adding new ones — this cost a round
+trip on 2026-08-31.
 See `DISCORD.md`. Optional: `TRUSTED_PROXY_HOPS` (defaults to 1),
 `MIN_ONLINE_SHOWN` (defaults to 3 — below this the idle screen shows no count at
 all), `DISCORD_STATS_CHANNEL_ID` (defaults to `DISCORD_CHANNEL_ID` — where the

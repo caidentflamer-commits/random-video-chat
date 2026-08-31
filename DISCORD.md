@@ -4,7 +4,13 @@ There is no admin web page. A report that needs a human arrives in Discord as a
 card with **Ban this IP** and **Dismiss** on it, so acting on one is a phone
 notification and a tap. `/stats` and `/queue` cover the rest.
 
-Everything below is inert until the env vars are set — the app runs fine
+**Status: the env vars were set on 2026-08-31**, so this surface is no longer
+inert. The setup below is kept as the reference for rebuilding it or changing
+the app. ⚠ Several `DISCORD_*` keys already existed on Render as empty
+placeholders — Render rejects duplicate keys, so **edit the existing rows in
+place** rather than adding new ones, or the deploy is blocked.
+
+Everything here is inert until the env vars are set — the app runs fine
 without any of it, and falls back to the old one-line `REPORT_WEBHOOK_URL` ping
 so nothing goes silent while you're setting this up.
 
