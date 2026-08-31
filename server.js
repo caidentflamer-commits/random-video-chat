@@ -396,16 +396,50 @@ const server = http.createServer((req, res) => {
 
       if (body.type === 3) {                                                 // MESSAGE_COMPONENT
         const [scope, action, id] = String((body.data && body.data.custom_id) || '').split(':');
-        if (scope !== 'review') return say('Unknown button.');
-        const out = decideReview(id, action, user.username || user.id);
+        const who = user.username || user.id;
         const original = (body.message && body.message.embeds && body.message.embeds[0]) || {};
+
+        // Reviewing a ban AFTER it happened, from the card the ban itself
+        // posted. The queue's buttons decide whether to ban; these decide
+        // whether the ban should stand.
+        if (scope === 'ban') {
+          const rec = findBan(id);
+          if (!rec) return say(`Ban #${id} is gone — the ledger empties on deploy. Try \`/bans\`, or \`/unban ip:…\` if you have the address.`);
+          if (action === 'ok') {
+            return reply({ type: 7, data: {
+              embeds: [{ ...original, color: 0x2b2f3a, footer: { text: `Ban kept — by ${who}` } }],
+              components: [],
+            } });
+          }
+          if (action === 'undo') {
+            // unbanIp awaits Supabase and can outrun Discord's 3-second window,
+            // so acknowledge immediately and correct the card once the unban
+            // actually lands. Claiming success up front would sometimes lie.
+            const chan = body.channel_id, mid = body.message && body.message.id;
+            unbanIp(rec.ip, who).then((out) => {
+              discordEdit(chan, mid, {
+                embeds: [{ ...original, color: out.ok ? 0x2b2f3a : 0x7f1d1d,
+                  footer: { text: `${out.text} — by ${who}` } }],
+                components: [],
+              });
+            });
+            return reply({ type: 7, data: {
+              embeds: [{ ...original, footer: { text: `Undoing — by ${who}…` } }],
+              components: [],
+            } });
+          }
+          return say('Unknown button.');
+        }
+
+        if (scope !== 'review') return say('Unknown button.');
+        const out = decideReview(id, action, who);
         // Edit the card in place and drop the buttons, so the channel shows
         // what was decided instead of a stale pair of tempting buttons.
         return reply({
           type: 7,
           data: {
             embeds: [{ ...original, color: out.ok && action === 'ban' ? 0x7f1d1d : 0x2b2f3a,
-              footer: { text: `${out.text} — by ${user.username || user.id}` } }],
+              footer: { text: `${out.text} — by ${who}` } }],
             components: [],
           },
         });
@@ -424,6 +458,15 @@ const server = http.createServer((req, res) => {
             discordSend(body.channel_id, { content: (out.ok ? '✅ ' : '⚠️ ') + out.text + ' — by ' + (user.username || user.id) });
           });
           return say('Working on `' + ip + '`…');
+        }
+        // "Someone needs unbanning and I can't find their IP." Reads the
+        // durable list, so it still works after the deploy that lost the card.
+        if (name === 'bans') {
+          activeBans(5).then((list) => {
+            if (!list.length) return discordSend(body.channel_id, { content: 'No active bans on record.' });
+            list.slice().reverse().forEach((b) => discordSend(body.channel_id, banCard(b)));
+          });
+          return say('Looking up the most recent active bans — each one comes back with an Undo button.');
         }
         if (name === 'queue') {
           const open = reviewQueue.filter((r) => r.status === 'open').slice().reverse();
@@ -1049,7 +1092,8 @@ function decideReview(id, action, who) {
   if (!item) return { ok: false, text: `#${id} is gone — the queue empties on deploy.` };
   if (item.status !== 'open') return { ok: false, text: `#${id} was already ${item.status}.` };
   if (action === 'ban') {
-    if (!banIp(item.targetIp, `review #${item.id}: ${item.reason || 'manual'}`, null)) {
+    if (!banIp(item.targetIp, `review #${item.id}: ${item.reason || 'manual'}`, null,
+      { fromReview: true, verdict: item.verdict || null, note: item.note, reporterIp: item.reporterIp })) {
       return { ok: false, text: `\`${item.targetIp}\` is on the exempt list — not banned.` };
     }
     item.status = 'banned';
@@ -1383,6 +1427,109 @@ async function postReviewCard(item) {
   }
 }
 
+// ---- Ban ledger, and reviewing a ban after the fact ------------------------
+// A ban used to arrive as a one-line webhook ping: no evidence on it, nothing
+// to press. So the bans with the LEAST human involvement — the automatic ones —
+// were the ones you were told least about, and reversing one meant copying an
+// IP out of a log line and typing /unban, which is why it never happened.
+// Every ban now lands as a card carrying what it was based on, with Undo on it.
+//
+// ⚠ Still no images, ever, and this is the request that will keep coming back.
+// The verdict numbers are the evidence a moderator gets. Attaching frames would
+// make Olumie a service that stores and transmits pictures of banned strangers
+// who are frequently nude and occasionally minors — see the CSAM note in
+// MODERATION.md. "Trusted mods only" does not change what the files are.
+const banLedger = [];
+const MAX_BAN_LEDGER = 200;
+let banSeq = 1;
+function recordBan(ip, reason, ctx) {
+  const rec = { id: banSeq++, ip, reason: reason || '', ts: new Date().toISOString(), ...(ctx || {}) };
+  banLedger.push(rec);
+  if (banLedger.length > MAX_BAN_LEDGER) banLedger.shift();
+  return rec;
+}
+const findBan = (id) => banLedger.find((b) => b.id === Number(id));
+
+function banCard(rec) {
+  const v = rec.verdict;
+  const lines = [
+    `**Banned** \`${rec.ip}\``,
+    `**Reason** ${rec.reason || 'n/a'}`,
+    `**History** ${historyLine(rec.history) || 'not looked up'}`,
+    v ? `**Verdict** ${v.tripped}/${v.frames} frames over the line · ${Object.entries(v.scores || {}).map(([k, n]) => `${k} ${n}`).join(' · ')}`
+      : '**Verdict** none recorded — this ban did not come from a classifier',
+  ];
+  if (rec.note) lines.push(`**Note** ${String(rec.note).replace(/`/g, "'").slice(0, 300)}`);
+  return {
+    embeds: [{
+      title: `Ban #${rec.id} · ${rec.reason || 'unspecified'}`,
+      description: lines.join('\n'),
+      color: 0x7f1d1d,
+      footer: { text: 'No image is stored anywhere — the scores are the evidence.' },
+      timestamp: rec.ts,
+    }],
+    components: [{
+      type: 1,
+      components: [
+        { type: 2, style: 2, label: 'Undo this ban', custom_id: `ban:undo:${rec.id}` },
+        { type: 2, style: 1, label: 'Ban was right', custom_id: `ban:ok:${rec.id}` },
+      ],
+    }],
+  };
+}
+
+// Same fallback discipline as postReviewCard: if the card can't send, the
+// one-line ping still goes out. A ban that reaches Discord in no form at all
+// looks like quiet rather than broken, which is the worst way for this to fail.
+async function postBanCard(rec) {
+  rec.history = await targetHistory(rec.ip);
+  const hist = historyLine(rec.history);
+  const line = `🔨 **Banned** ${rec.ip} · ${rec.reason || 'n/a'}${rec.verdict ? ` · scores ${JSON.stringify(rec.verdict.scores || {})}` : ''}${hist ? ` · ${hist}` : ''} · undo with \`/unban ip:${rec.ip}\``;
+  if (!discordReady()) return notify(line);
+  const ok = await discordSend(process.env.DISCORD_CHANNEL_ID, banCard(rec));
+  if (!ok) {
+    console.error(`BAN #${rec.id} card failed to post — falling back to the webhook.`);
+    notify('⚠️ card failed to post — ' + line);
+  }
+}
+
+// What `/bans` answers: "someone needs unbanning and I can't find their IP."
+// Supabase first, deliberately — the in-memory ledger empties on deploy, which
+// is exactly when you can't find the message any more.
+async function activeBans(limit) {
+  if (supa) {
+    try {
+      const { data, error } = await supa.from('bans').select('*')
+        .is('expires_at', null).order('id', { ascending: false }).limit(limit);
+      if (!error && Array.isArray(data)) {
+        // Adopt each durable row into the ledger so its buttons have something
+        // to resolve against after a restart.
+        return data.map((r) => latestLedgerEntry(r.ip) ||
+          recordBan(r.ip, r.reason || '', { ts: r.created_at || undefined, durable: true }));
+      }
+    } catch (e) { console.warn('active bans lookup failed:', e && e.message); }
+  }
+  // One card per banned ADDRESS, not per ban event. The same IP can be banned,
+  // unbanned and banned again, and listing it three times makes the list read
+  // as three people — with three Undo buttons, two of which do nothing.
+  const seen = new Set();
+  const out = [];
+  for (let i = banLedger.length - 1; i >= 0 && out.length < limit; i--) {
+    const b = banLedger[i];
+    if (!bannedIps.has(b.ip) || seen.has(b.ip)) continue;
+    seen.add(b.ip);
+    out.push(b);
+  }
+  return out;
+}
+
+// The newest ledger entry for an address — an IP banned more than once has
+// several, and the current reason is the last one.
+function latestLedgerEntry(ip) {
+  for (let i = banLedger.length - 1; i >= 0; i--) if (banLedger[i].ip === ip) return banLedger[i];
+  return null;
+}
+
 // A report only bans on its own when a visual reason came back with a positive
 // classification from the reporter's own browser. That verdict is client-
 // supplied — this is a P2P mesh, no frame ever reaches the server, so there is
@@ -1665,7 +1812,7 @@ function socketExempt(socket) {
 // Every path that can ban goes through here — report, report-last, and a
 // decision from the queue. One gate, so a fourth path added later cannot
 // silently skip the check.
-function banIp(ip, reason, socket) {
+function banIp(ip, reason, socket, ctx) {
   if (ipExempt(ip) || socketExempt(socket)) {
     const who = socket && socket.userId ? ' user ' + socket.userId : '';
     console.warn('BAN SKIPPED (exempt) ' + ip + who + ' — would have been: ' + reason);
@@ -1673,6 +1820,11 @@ function banIp(ip, reason, socket) {
   }
   bannedIps.add(ip);
   dbInsertBan(ip, reason);
+  // Every ban is on the record and reviewable, whatever path produced it.
+  const rec = recordBan(ip, reason, ctx);
+  // A ban decided from the review queue already has a card, and pressing Ban
+  // edits it in place — a second card would just be noise.
+  if (!ctx || !ctx.fromReview) postBanCard(rec);
   return true;
 }
 
@@ -1952,7 +2104,8 @@ wss.on('connection', (socket, req) => {
         const gate = check.ban ? mayBan(socket.ip, 1) : { ok: false, reason: check.why };
         // Decide first, log what actually happened second — logging from the
         // gate alone recorded "banned" for bans the exemption then refused.
-        const banned = gate.ok && banIp(target.ip, reason, target);
+        const banned = gate.ok && banIp(target.ip, reason, target,
+          { verdict: check.verdict || null, note, reporterIp: socket.ip, reporter: socket.peerId });
         const exempt = socketExempt(target);
         const why = exempt ? 'target is exempt — recorded, not queued' : gate.reason;
         logReport({
@@ -1983,7 +2136,8 @@ wss.on('connection', (socket, req) => {
         const note = String(msg.note || '').slice(0, 200);
         const check = confirmedExplicit(msg);
         const gate = check.ban ? mayBan(socket.ip, 1) : { ok: false, reason: check.why };
-        const banned = gate.ok && banIp(chosen.ip, reason || 'report-last', null);
+        const banned = gate.ok && banIp(chosen.ip, reason || 'report-last', null,
+          { verdict: check.verdict || null, note, reporterIp: socket.ip, reporter: socket.peerId });
         const exemptLast = ipExempt(chosen.ip);
         const whyLast = exemptLast ? 'target is exempt — recorded, not queued' : gate.reason;
         logReport({

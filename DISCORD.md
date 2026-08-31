@@ -104,6 +104,39 @@ a stale pair of tempting buttons.
 **No images, ever.** Frames stay in the reporter's browser; only numbers are
 transmitted. See `MODERATION.md` for why that line is not worth crossing.
 
+**A card for every ban, with Undo on it.** A ban used to arrive as a one-line
+webhook ping — no evidence on it, nothing to press. So the bans with the *least*
+human involvement, the automatic ones, were the ones you were told least about,
+and reversing one meant copying an IP out of a log line and typing `/unban`,
+which is why it never happened.
+
+Every ban now posts a card carrying the reason, the target IP, the report
+history for that address, and the classifier verdict (how many frames went over
+the line, and the scores). Two buttons: **Undo this ban** and **Ban was right**.
+Pressing either edits the card in place and removes the buttons, so the channel
+shows decisions rather than a backlog of unactioned pings.
+
+- **Undo is honest about timing.** The unban writes to Supabase, which can
+  outrun Discord's 3-second interaction window, so the card first says
+  "Undoing…" and is corrected to the real outcome when the write lands. It
+  never claims success up front.
+- **A ban decided from the review queue does not get a second card** — pressing
+  Ban there already edits that card in place.
+- ⚠ **No images, ever — and this is the request that will keep coming back.**
+  The verdict numbers are the evidence a moderator gets. Attaching frames would
+  make Olumie a service that stores and transmits pictures of banned strangers
+  who are frequently nude and occasionally minors. "Only trusted mods can see
+  them" does not change what the files are. See the CSAM note in
+  `MODERATION.md`. Asked for and declined 2026-08-31.
+
+**`/bans` — for when you can't find the message.** Lists the most recent active
+bans as cards, each with its own Undo button, so unbanning someone never depends
+on scrolling back to find an IP. It reads the **durable** Supabase list first,
+deliberately: the in-memory ledger empties on deploy, which is exactly when the
+card you were looking for is gone. One card per banned *address*, not per ban
+event — an IP banned, unbanned and banned again lists once, showing the current
+reason.
+
 **A live stats board.** The bot posts **one** message and **edits it in place**
 on a timer, so the numbers change while you watch instead of going stale the
 moment `/stats` renders them. Pin it and it's a dashboard. Editing a message
@@ -132,11 +165,18 @@ notifies nobody, so this is silent however often it runs.
 |---|---|
 | `/stats` | The whole set as a one-off snapshot: online, peak, funnel, queue health, call length, rooms, safety, money |
 | `/queue` | Reposts the waiting reports as fresh, actionable cards |
+| `/bans` | The most recent active bans, each as a card with an Undo button |
 | `/whoami` | Proxy-hop config, for checking `TRUSTED_PROXY_HOPS` |
 | `/unban` | Lift a ban — `/unban ip:1.2.3.4` |
 
-All three reply **ephemerally** — only you see the output, so the channel
-doesn't fill with numbers.
+The replies are **ephemeral** — only you see them, so the channel doesn't fill
+with numbers. `/queue` and `/bans` are the exception: their acknowledgement is
+ephemeral, but the cards themselves post to the channel, because a card with
+buttons has to be actionable later.
+
+⚠ **Slash commands only exist after they're registered** (step 7). If `/bans`
+doesn't appear in the command list, that script hasn't been run since it was
+added. Type them in any channel the bot can see.
 
 ## Unbanning
 
