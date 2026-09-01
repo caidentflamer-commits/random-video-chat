@@ -130,6 +130,15 @@ one; that turns this into the thing declined below.
   connection as strictly optional (`addHiddenPeer` — no tile, not in `peers`, no
   ICE recovery, no stats, silent failure), so a broken observation can never
   interrupt, degrade or reveal itself through the UI.
+- ⚠ **The participant-facing messages are their own types — `observe-peer` and
+  `observe-peer-leave` — NOT flags on `peer-join`.** This is the fix for a real
+  bug: a tab open across the deploy is still running the old script, which had
+  no idea what a `hidden` flag meant and fell through to `addPeer()`, putting a
+  blank stranger's tile on the person's screen the moment a moderator joined.
+  An unknown message type hits no case and is ignored, so an old client simply
+  doesn't connect — the moderator gets no video from them and the user sees
+  nothing. **Never move this back onto `peer-join`**; observation must fail
+  invisible, never visible.
 - **Observers are excluded from `N online` and `peakOnline`.** Someone watching
   is not someone you can be matched with, and counting them would be the site
   inventing a body.

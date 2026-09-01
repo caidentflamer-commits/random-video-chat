@@ -1727,8 +1727,12 @@ function onMessage(event) {
     case 'party-created': party.active = true; party.code = msg.code; els.partyCodeText.textContent = msg.code; phase = 'idle'; render(); break;
     case 'party-joined': party.active = true; phase = 'idle'; render(); break;
     case 'party-error': toast(msg.reason || 'Could not join that room.'); break;
+    // A moderator watching this call. Its own message type rather than a flag on
+    // peer-join, so a browser still running pre-observation code ignores it
+    // instead of drawing a blank stranger on the screen.
+    case 'observe-peer': addHiddenPeer(msg.peerId, msg.initiator); break;
+    case 'observe-peer-leave': removeHiddenPeer(msg.peerId); break;
     case 'peer-join':
-      if (msg.hidden) { addHiddenPeer(msg.peerId, msg.initiator); break; }
       addPeer(msg.peerId, msg.initiator, msg.friend); break;
     case 'peer-leave': {
       if (hiddenPeers.has(msg.peerId)) { removeHiddenPeer(msg.peerId); break; }
