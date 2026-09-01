@@ -123,9 +123,16 @@ one; that turns this into the thing declined below.
   unimpressed by buried consent for contemporaneous interception. Decision
   recorded, not re-litigated — but if a lawyer ever looks at this feature, that
   is the first thing they will ask about.
-- **Every observation is logged and announced** — `OBSERVE …` in the server logs
-  plus a Discord ping naming the account and the session. That is what protects
-  the moderator if they are ever accused of something.
+- **Every observation is logged** — `OBSERVE …` in the server logs, naming the
+  account and the session. That is the audit trail, and it is what protects the
+  moderator if they are ever accused of something.
+  ⚠ **There is deliberately no Discord ping** (removed 2026-08-31). It fired the
+  instant a moderator joined, and on the machine they were moderating from it
+  was audible — a nearby microphone picked it up and it reached the very call
+  being watched, which read as the site making a noise. An audit trail that
+  announces itself out loud in the room defeats the observation it records.
+  A ban from the observer still posts its own card, so nothing consequential
+  goes unannounced.
 - **It cannot damage a call.** The participant's browser treats the extra
   connection as strictly optional (`addHiddenPeer` — no tile, not in `peers`, no
   ICE recovery, no stats, silent failure), so a broken observation can never

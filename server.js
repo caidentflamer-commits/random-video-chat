@@ -1669,10 +1669,14 @@ function detachObserver(socket) {
 // The audit trail. Every observation is logged and announced — it is what
 // protects the moderator if they are ever accused of something, and what keeps
 // the feature honest the moment there is more than one of them.
+// No Discord ping — deliberately. It fired the instant a moderator joined, and
+// on the machine they were moderating from it was audible, so a nearby mic
+// picked it up and it reached the very call being watched. An audit trail that
+// announces itself out loud in the room defeats the observation it exists to
+// record. The Render log line IS the audit trail; a ban from here still posts
+// its own card, so nothing consequential goes unannounced.
 function logObserve(socket, s, what) {
-  const line = `OBSERVE ${what} by ${socket.userId} — session #${s.id}, ${sessionMembers(s).length} people`;
-  console.log(line);
-  notify(`👁 **Moderator ${what}** session #${s.id} — ${socket.userId}`);
+  console.log(`OBSERVE ${what} by ${socket.userId} — session #${s.id}, ${sessionMembers(s).length} people`);
 }
 
 // Deterministic initiator per pair (smaller peerId offers) — avoids WebRTC glare.
