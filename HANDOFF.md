@@ -175,6 +175,20 @@ people together with a friend — or with a stranger you both chose to keep, via
   exact metric this feature exists to move. Polling stops when the tab is hidden
   and resumes on `visibilitychange`. Never fake or embellish the number: a
   fabricated count screenshotted next to an empty room is unrecoverable.
+- **Live moderator observation (2026-08-31):** an authorised moderator can drop
+  in on a call in progress from **`/watch.html`** (unlisted, `Disallow`ed in
+  robots), watch it, and ban someone. Sends nothing — no camera, mic or chat —
+  and **records nothing anywhere**. Gated on the Supabase user id via
+  **`OBSERVER_USER_IDS`**; unset means nobody. The URL is not the control.
+  Disclosed in `terms.html` §3 and `privacy.html`; participants get no
+  indicator, deliberately. Every observation is logged (`OBSERVE …`) and pinged
+  to Discord with the account on it. Observers are kept out of `N online` and
+  `peakOnline`, and out of `roomMembers()` so chat never reaches them.
+  ⚠ The participant's side (`addHiddenPeer` in `index.html`) is deliberately
+  threadbare — no tile, not in `peers`, no ICE recovery, no stats, silent
+  failure — because **observation must never be able to degrade a real call**.
+  Keep it that way. Full rationale and the declined age-gate decision are in
+  `MODERATION.md`.
 - **Ban cards with Undo + `/bans` (2026-08-31):** a ban used to arrive as a
   one-line webhook ping, so the bans with the *least* human involvement were the
   ones you were told least about, and reversing one meant copying an IP out of a
@@ -304,6 +318,11 @@ See `DISCORD.md`. Optional: `TRUSTED_PROXY_HOPS` (defaults to 1),
 `MIN_ONLINE_SHOWN` (defaults to 3 — below this the idle screen shows no count at
 all), `DISCORD_STATS_CHANNEL_ID` (defaults to `DISCORD_CHANNEL_ID` — where the
 self-updating stats board lives).
+**`OBSERVER_USER_IDS`** — comma-separated Supabase user ids allowed to watch live
+calls from `/watch.html`. **Unset means nobody**, like `DISCORD_ADMIN_IDS`, and
+for the same reason: the failure everyone regrets is the open one. Find your id
+by signing in on the site and reading it from the `profiles` table, or from the
+`OBSERVE`/auth log lines.
 `TURN_KEY_ID` + `TURN_KEY_API_TOKEN` **are** set (Cloudflare TURN live
 2026-08-10). `ADMIN_KEY` **is** set (2026-08-09).
 (`SUPPORT_URL` is **not** an env var — it's a constant at the top of

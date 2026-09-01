@@ -985,7 +985,18 @@ function bump(name, by) { if (Object.prototype.hasOwnProperty.call(stats, name))
 // anyone could curl /pulse to find out exactly how empty it is, which is the one
 // fact this site must never publish. /admin/stats still reports the truth.
 const MIN_ONLINE_SHOWN = Math.max(1, parseInt(process.env.MIN_ONLINE_SHOWN || '3', 10));
-function onlineNow() { return wss ? wss.clients.size : 0; }
+// A moderator watching a call is not someone you can be matched with, so they
+// must not show up in "N online" or push it over the display threshold — that
+// would be the site inventing a body, which is the one thing this number may
+// never do. Only sockets actively observing are excluded: using the site
+// normally while signed in as an admin still counts, because then they really
+// are available.
+function onlineNow() {
+  if (!wss) return 0;
+  let n = 0;
+  for (const c of wss.clients) if (!c.observing && !c.observerClient) n++;
+  return n;
+}
 function publicOnline() { const n = onlineNow(); return n >= MIN_ONLINE_SHOWN ? n : null; }
 // Percentages are the point — raw counters make you do arithmetic to answer
 // "is this bad?", and nobody does it.
@@ -1594,6 +1605,63 @@ function roomMembers(socket) {
   if (p.session) { const all = []; p.session.parties.forEach((pt) => pt.members.forEach((m) => all.push(m))); return all; }
   return p.members;
 }
+// ---- Moderator observation -------------------------------------------------
+// An authorised moderator can drop in on a live call to check it, receiving
+// video and sending nothing. Disclosed in the Terms; nothing is recorded or
+// stored, here or anywhere — the observer's browser renders frames and forgets
+// them, exactly like any other participant's.
+//
+// Gated on the Supabase user id, never on a URL. /watch.html is unlisted but
+// that is not the control: an account not on OBSERVER_USER_IDS is refused by
+// the server, so knowing the address buys nothing.
+//
+// ⚠ Observation must never be able to damage a call. Every path below fails
+// closed and silently: an unauthorised request is dropped, a dead session
+// answers with an error, and the participant's client treats the extra
+// connection as strictly optional (see addHiddenPeer in index.html).
+const liveSessions = new Map();
+let sessionSeq = 1;
+const observerIds = () => listFromEnv('OBSERVER_USER_IDS');
+const isObserver = (socket) => !!socket.userId && observerIds().includes(socket.userId);
+const sessionMembers = (s) => {
+  const all = [];
+  s.parties.forEach((pt) => pt.members.forEach((m) => all.push(m)));
+  return all;
+};
+
+// Who this socket is allowed to exchange WebRTC signalling with. Observers and
+// the people they are watching, and nobody else — an observer is deliberately
+// NOT in roomMembers(), so chat and every other room-scoped message continues
+// to ignore them.
+function signalPeers(socket) {
+  if (socket.observing) return sessionMembers(socket.observing);
+  const mine = roomMembers(socket);
+  const s = socket.party && socket.party.session;
+  if (s && s.observers && s.observers.size) return mine.concat([...s.observers]);
+  return mine;
+}
+
+function detachObserver(socket) {
+  const s = socket.observing;
+  if (!s) return;
+  if (s.observers) s.observers.delete(socket);
+  socket.observing = null;
+  // Tell both ends to tear the extra connection down.
+  sessionMembers(s).forEach((m) => {
+    send(m, { type: 'peer-leave', peerId: socket.peerId });
+    send(socket, { type: 'peer-leave', peerId: m.peerId });
+  });
+}
+
+// The audit trail. Every observation is logged and announced — it is what
+// protects the moderator if they are ever accused of something, and what keeps
+// the feature honest the moment there is more than one of them.
+function logObserve(socket, s, what) {
+  const line = `OBSERVE ${what} by ${socket.userId} — session #${s.id}, ${sessionMembers(s).length} people`;
+  console.log(line);
+  notify(`👁 **Moderator ${what}** session #${s.id} — ${socket.userId}`);
+}
+
 // Deterministic initiator per pair (smaller peerId offers) — avoids WebRTC glare.
 function connectPair(a, b, friend) {
   send(a, { type: 'peer-join', peerId: b.peerId, initiator: a.peerId < b.peerId, friend: !!friend });
@@ -1671,7 +1739,8 @@ setInterval(() => {
 }, 2000);
 
 function match(pA, pB) {
-  const session = { parties: [pA, pB], startedAt: Date.now() };
+  const session = { id: sessionSeq++, parties: [pA, pB], startedAt: Date.now(), observers: new Set() };
+  liveSessions.set(session.id, session);
   pA.session = session; pB.session = session;
   searching = searching.filter((p) => p !== pA && p !== pB);
   // How long each side waited for this. Cleared as it's counted so a party that
@@ -1722,6 +1791,10 @@ function canTeamUp(socket) {
 function dissolveSession(session, reenqueue) {
   const [pA, pB] = session.parties;
   const now = Date.now();
+  // Drop any moderator watching this call before the peers go away, so the
+  // observer's connections are torn down rather than left dangling.
+  liveSessions.delete(session.id);
+  if (session.observers) [...session.observers].forEach((o) => detachObserver(o));
   // How long they actually talked. Counted once per session however it ended —
   // skip, stop or disconnect — since "why it ended" is already in skips/stops.
   if (session.startedAt) {
@@ -1930,7 +2003,7 @@ wss.on('connection', (socket, req) => {
     if (banned && !ipExempt(socket.ip) && socket.readyState === socket.OPEN) { bannedIps.add(socket.ip); send(socket, { type: 'banned', unban: unbanOffer(socket.ip) || undefined }); socket.close(); }
   });
   console.log(`Connected ${socket.peerId} (${socket.ip})`);
-  if (wss.clients.size > stats.peakOnline) stats.peakOnline = wss.clients.size;
+  if (onlineNow() > stats.peakOnline) stats.peakOnline = onlineNow();
   wakeStatsBoard();   // someone showed up — stop idling the Discord board
 
   // In Node an 'error' event with no listener is rethrown and kills the
@@ -2052,8 +2125,59 @@ wss.on('connection', (socket, req) => {
 
       // ---- In a room ----
       case 'signal': {
-        const to = roomMembers(socket).find((m) => m.peerId === msg.to);
+        const to = signalPeers(socket).find((m) => m.peerId === msg.to);
         if (to) send(to, { type: 'signal', from: socket.peerId, data: msg.data });
+        break;
+      }
+      // ---- Moderator observation ----
+      // Every one of these is a no-op for anyone not on OBSERVER_USER_IDS. The
+      // check is on the verified Supabase user id, so it follows the account
+      // rather than a network, and an unauthorised socket gets silence.
+      case 'observe-list': {
+        if (!isObserver(socket)) break;
+        // This socket is a moderation console, not a visitor: it is on
+        // /watch.html and can never be matched with anyone. Mark it so it stays
+        // out of "N online" even while it sits on the list doing nothing.
+        socket.observerClient = true;
+        const now = Date.now();
+        send(socket, { type: 'observe-list', sessions: [...liveSessions.values()].map((s) => ({
+          id: s.id,
+          size: sessionMembers(s).length,
+          secs: Math.round((now - s.startedAt) / 1000),
+          watched: !!(s.observers && s.observers.size),
+        })) });
+        break;
+      }
+      case 'observe-join': {
+        if (!isObserver(socket)) break;
+        const s = liveSessions.get(Number(msg.id));
+        if (!s) { send(socket, { type: 'observe-error', reason: 'That call has already ended.' }); break; }
+        detachObserver(socket);          // one call at a time
+        s.observers.add(socket);
+        socket.observing = s;
+        sessionMembers(s).forEach((m) => {
+          // The participant offers — they are the side with tracks to send, and
+          // fixing the direction avoids glare without a peerId comparison.
+          send(m, { type: 'peer-join', peerId: socket.peerId, initiator: true, hidden: true });
+          send(socket, { type: 'peer-join', peerId: m.peerId, initiator: false, observer: true });
+        });
+        logObserve(socket, s, 'started watching');
+        break;
+      }
+      case 'observe-leave': {
+        if (socket.observing) { logObserve(socket, socket.observing, 'stopped watching'); detachObserver(socket); }
+        break;
+      }
+      case 'observe-ban': {
+        if (!isObserver(socket) || !socket.observing) break;
+        const target = sessionMembers(socket.observing).find((m) => m.peerId === msg.peerId);
+        if (!target) { send(socket, { type: 'observe-error', reason: 'They already left.' }); break; }
+        // Straight through banIp, so exemptions, the durable record, the ledger
+        // and the Undo card all apply exactly as they do everywhere else.
+        const reason = 'observed: ' + String(msg.reason || 'moderator judgement').slice(0, 80);
+        const ok = banIp(target.ip, reason, target, { observedBy: socket.userId, note: msg.note });
+        if (ok) { bump('bans'); banSocket(target, false); }
+        send(socket, { type: 'observe-banned', peerId: msg.peerId, ok });
         break;
       }
       case 'chat': {
@@ -2158,6 +2282,9 @@ wss.on('connection', (socket, req) => {
   socket.on('close', () => {
     console.log(`Disconnected ${socket.peerId}`);
     if (socket.counted) { releaseConnection(socket.ip); socket.counted = false; }
+    // A moderator who closes the tab must not leave the people they were
+    // watching holding a connection to nobody.
+    if (socket.observing) { logObserve(socket, socket.observing, 'stopped watching (disconnected)'); detachObserver(socket); }
     leaveAll(socket);
   });
 });
