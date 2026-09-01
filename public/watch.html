@@ -133,6 +133,10 @@ function onMessage(ev) {
       break;
     case 'peer-join': if (msg.observer) addPeer(msg.peerId); break;
     case 'peer-leave': removePeer(msg.peerId); break;
+    // The call is over, or we were detached from it. Clear every tile rather
+    // than waiting for a peer-leave per person — whoever ended it by closing
+    // their tab is already out of the member list, so their tile would freeze.
+    case 'observe-ended': stopWatching(); list(); break;
     case 'signal': onSignal(msg.from, msg.data); break;
   }
 }

@@ -722,7 +722,16 @@ const server = http.createServer((req, res) => {
       return res.end('Not found');
     }
     const ext = path.extname(filePath);
-    res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream' });
+    // Static files went out with no cache headers at all, so browsers applied
+    // their own heuristics and a returning visitor could keep running a build
+    // from before the last deploy. The whole app is one HTML file with no
+    // versioned asset names, so there is nothing to bust — revalidate instead.
+    // (This does not help a tab that is ALREADY open across a deploy; nothing
+    // can. That is why the observation messages use types an old client
+    // ignores.)
+    const headers = { 'Content-Type': MIME[ext] || 'application/octet-stream' };
+    if (ext === '.html' || ext === '.css' || ext === '.webmanifest') headers['Cache-Control'] = 'no-cache';
+    res.writeHead(200, headers);
     res.end(data);
   });
 });
@@ -1646,11 +1655,15 @@ function detachObserver(socket) {
   if (!s) return;
   if (s.observers) s.observers.delete(socket);
   socket.observing = null;
-  // Tell both ends to tear the extra connection down.
-  sessionMembers(s).forEach((m) => {
-    send(m, { type: 'peer-leave', peerId: socket.peerId });
-    send(socket, { type: 'peer-leave', peerId: m.peerId });
-  });
+  // Participants still present drop their connection to the observer. Their
+  // side gets its own message type, which an old client ignores rather than
+  // acting on.
+  sessionMembers(s).forEach((m) => send(m, { type: 'observe-peer-leave', peerId: socket.peerId }));
+  // The observer clears EVERYTHING, rather than being sent one peer-leave per
+  // current member. By the time a session ends because somebody closed their
+  // tab, that person is already out of the member list — so per-member messages
+  // left the moderator staring at a frozen tile of the one who left.
+  send(socket, { type: 'observe-ended' });
 }
 
 // The audit trail. Every observation is logged and announced — it is what
@@ -1788,22 +1801,31 @@ function canTeamUp(socket) {
 }
 
 // Dissolve a session. `reenqueue` is the list of parties that keep searching.
-function dissolveSession(session, reenqueue) {
-  const [pA, pB] = session.parties;
-  const now = Date.now();
-  // Drop any moderator watching this call before the peers go away, so the
-  // observer's connections are torn down rather than left dangling.
+// Everything that must happen once, however a call ends. There are TWO ways a
+// session dies — dissolveSession() for skip/stop, and leaveAll() when someone's
+// socket simply goes away — and leaveAll unwinds the session inline rather than
+// calling dissolveSession. Anything that lived only in dissolveSession silently
+// missed every call that ended by closing a tab, which is most of them.
+function closeSession(session) {
+  if (!session) return;
   liveSessions.delete(session.id);
+  // Drop any moderator watching before the peers go away, so their connections
+  // are torn down rather than left pointing at a call that no longer exists.
   if (session.observers) [...session.observers].forEach((o) => detachObserver(o));
-  // How long they actually talked. Counted once per session however it ended —
-  // skip, stop or disconnect — since "why it ended" is already in skips/stops.
+  // How long they actually talked. Once per session, whatever ended it.
   if (session.startedAt) {
-    const secs = Math.round((now - session.startedAt) / 1000);
+    const secs = Math.round((Date.now() - session.startedAt) / 1000);
     stats.callSecs += secs; stats.callsEnded++;
     if (secs > stats.longestCallSecs) stats.longestCallSecs = secs;
     if (secs < 5) stats.fastEnds++;
-    session.startedAt = 0;   // a double dissolve must not count twice
+    session.startedAt = 0;   // closing twice must not count twice
   }
+}
+
+function dissolveSession(session, reenqueue) {
+  const [pA, pB] = session.parties;
+  const now = Date.now();
+  closeSession(session);
   // Drop the cross-party mesh connections and remember opponents for "Report last".
   pA.members.forEach((a) => pB.members.forEach((b) => {
     leavePair(a, b);
@@ -1956,6 +1978,12 @@ function leaveAll(socket) {
   // Tell everyone currently connected to this socket that it's gone.
   const mates = roomMembers(socket).filter((m) => m !== socket);
   mates.forEach((m) => send(m, { type: 'peer-leave', peerId: socket.peerId }));
+  // Observers are deliberately not in roomMembers(), so they need telling
+  // separately — otherwise a moderator watching a party keeps a frozen tile of
+  // whoever just left while the call carries on without them.
+  if (p.session && p.session.observers) {
+    p.session.observers.forEach((o) => send(o, { type: 'peer-leave', peerId: socket.peerId }));
+  }
 
   p.members = p.members.filter((m) => m !== socket);
 
@@ -1965,6 +1993,10 @@ function leaveAll(socket) {
     if (p.code) partiesByCode.delete(p.code);
     if (p.session) {
       const other = p.session.parties.find((x) => x !== p);
+      // The session is over. Without this it stayed in liveSessions forever —
+      // a phantom "0 people" call in the moderator's list, a slow leak, and any
+      // observer left attached to a call that no longer exists.
+      closeSession(p.session);
       p.session = null;
       if (other) { other.session = null; if (other.members.length) enqueue(other); }  // partner-left → re-search
     }
@@ -2156,9 +2188,14 @@ wss.on('connection', (socket, req) => {
         s.observers.add(socket);
         socket.observing = s;
         sessionMembers(s).forEach((m) => {
-          // The participant offers — they are the side with tracks to send, and
-          // fixing the direction avoids glare without a peerId comparison.
-          send(m, { type: 'peer-join', peerId: socket.peerId, initiator: true, hidden: true });
+          // ⚠ A DISTINCT MESSAGE TYPE, not `peer-join` with a flag. A tab that
+          // was open across the deploy is still running the old script, which
+          // has no idea what `hidden` means — it fell through to addPeer() and
+          // put a blank stranger's tile on the person's screen. Unknown types
+          // hit no case in that switch and are ignored, so an old client simply
+          // doesn't connect to the observer: no video for the moderator, and
+          // nothing at all on the user's screen. Fail invisible, not visible.
+          send(m, { type: 'observe-peer', peerId: socket.peerId, initiator: true });
           send(socket, { type: 'peer-join', peerId: m.peerId, initiator: false, observer: true });
         });
         logObserve(socket, s, 'started watching');
