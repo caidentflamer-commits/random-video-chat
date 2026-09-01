@@ -102,6 +102,27 @@ record (it's already durable in Supabase); don't delete it. Ban the account/IP
 as usual. This is the one category of report where "handle it later" has legal
 consequences.
 
+## Asked for and declined: frames attached to the ban message (2026-08-31)
+
+The request was reasonable and the underlying complaint was right — you only
+heard about a ban after the fact, with no evidence and no way to reverse it.
+The answer was **not** to attach camera captures, even privately, even to a
+short list of trusted moderators.
+
+Bans here are overwhelmingly for nudity, and this document already records that
+the subjects are occasionally minors. Sending those frames to Discord means
+transmitting and storing images of possibly-nude, possibly-underage strangers on
+a third party's servers, on top of this one — with the legal duties above
+attaching to every copy. Restricting who can view them changes who looks, not
+what is being stored.
+
+**What was built instead**: every ban now posts a card with the reason, the
+target IP, that address's report history, and the classifier verdict — with
+**Undo this ban** on it, plus a `/bans` command that lists active bans when the
+card can't be found. That gives full review over every ban. The difference is
+that you review *the decision and its evidence*, not the person's body. See
+`DISCORD.md`.
+
 ## Where reports go (three layers)
 
 Every report — manual or auto — is recorded via `logReport()`:

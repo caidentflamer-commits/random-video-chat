@@ -175,6 +175,23 @@ people together with a friend — or with a stranger you both chose to keep, via
   exact metric this feature exists to move. Polling stops when the tab is hidden
   and resumes on `visibilitychange`. Never fake or embellish the number: a
   fabricated count screenshotted next to an empty room is unrecoverable.
+- **Ban cards with Undo + `/bans` (2026-08-31):** a ban used to arrive as a
+  one-line webhook ping, so the bans with the *least* human involvement were the
+  ones you were told least about, and reversing one meant copying an IP out of a
+  log line. Every ban now posts a Discord card — reason, target IP, that
+  address's report history, classifier verdict — with **Undo this ban** and
+  **Ban was right** on it. Undo says "Undoing…" first and corrects itself when
+  the Supabase write lands, because that can outrun Discord's 3s interaction
+  window. Queue-decided bans get no second card (pressing Ban already edits one).
+  `/bans` lists active bans as cards with Undo, reading the **durable** Supabase
+  list first — the in-memory ledger empties on deploy, which is exactly when you
+  can't find the card. One card per banned *address*, not per ban event.
+  ⚠ **`/bans` must be registered** (`tools/register_discord_commands.js`) or it
+  won't appear.
+  ⚠ **Attaching camera frames to these cards was asked for and declined
+  2026-08-31** — see `MODERATION.md`. Expect the request to recur; the verdict
+  numbers are the evidence, and "trusted mods only" does not change what the
+  files would be.
 - **Live stats board in Discord (2026-08-23):** the bot posts **one** message and
   **edits it in place** on a timer, so a pinned board updates itself instead of
   needing `/stats` typed at it. Edits notify nobody. Cadence follows the site:
