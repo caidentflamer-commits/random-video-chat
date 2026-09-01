@@ -36,6 +36,12 @@
     background: rgba(0,0,0,.65); font-family: var(--font-mono); }
   .tile .act { position: absolute; right: 8px; bottom: 8px; display: flex; gap: 6px; }
   .empty { color: var(--text-subtle); font-size: 14px; }
+  .conn { font-size: 12px; font-family: var(--font-mono); padding: 3px 9px; display: inline-flex; gap: 6px; align-items: center; }
+  .conn::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  .conn[data-state="ok"] { color: var(--online); }
+  .conn[data-state="connecting"] { color: var(--warning); }
+  .conn[data-state="down"] { color: var(--danger, #e5484d); }
+  .conn[data-state="off"] { color: var(--text-subtle); }
   .warn { padding: 12px 14px; background: var(--surface-2); border-left: 3px solid var(--warning); font-size: 14px; }
 </style>
 </head>
@@ -58,6 +64,9 @@
   <div class="row" style="justify-content:space-between">
     <h2 class="c-h3" style="margin:0;font-size:var(--fs-md)">Live calls</h2>
     <div class="row">
+      <!-- Without this, "no calls right now" and "this page is disconnected"
+           looked identical, and the second one is a lie you'd act on. -->
+      <span class="conn" id="connState" data-state="off">Not signed in</span>
       <button class="c-btn c-btn--secondary c-btn--sm" id="refresh">Refresh</button>
       <button class="c-btn c-btn--ghost c-btn--sm is-hidden" id="leave">Stop watching</button>
     </div>
@@ -75,6 +84,7 @@
 const $ = (id) => document.getElementById(id);
 const show = (el, on) => el.classList.toggle('is-hidden', !on);
 let ws = null, sb = null, token = '', iceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
+let watchingId = null;
 const peers = new Map();   // peerId -> { pc, video, chain, pending }
 
 // ---- sign in ---------------------------------------------------------------
@@ -104,21 +114,69 @@ function applySession(session) {
   show($('signIn'), !token);
   show($('signOut'), !!token);
   if (token) connect();
+  else { stopPolling(); setStatus('off', 'Not signed in'); }
 }
 $('signIn').onclick = () => sb && sb.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: location.href } });
 $('signOut').onclick = async () => { if (sb) await sb.auth.signOut(); location.reload(); };
 
 // ---- socket ----------------------------------------------------------------
+// This page is meant to be left open until somebody appears, which the first
+// version did not actually support: the list was fetched once and never again,
+// and a dropped socket set ws = null with no reconnect and no indicator. Since
+// sendMsg() no-ops on a closed socket, Refresh then did nothing at all — so a
+// disconnected page looked exactly like a quiet one. That is the worst way for
+// this to fail, because you would believe you were watching when you were not.
+const POLL_MS = 10000;         // list refresh while idle
+const RECONNECT_MS = 3000;     // base backoff, doubled up to a cap
+const RECONNECT_MAX = 30000;
+let pollTimer = null, reconnectTimer = null, reconnectWait = RECONNECT_MS, connected = false;
+
+function setStatus(state, detail) {
+  const el = $('connState');
+  el.textContent = detail;
+  el.dataset.state = state;
+}
+
 async function connect() {
+  clearTimeout(reconnectTimer); reconnectTimer = null;
   try { iceServers = (await (await fetch('/ice', { cache: 'no-store' })).json()).iceServers || iceServers; } catch {}
   if (ws && ws.readyState === ws.OPEN) return list();
+  if (ws && ws.readyState === ws.CONNECTING) return;
+  setStatus('connecting', 'Connecting…');
   ws = new WebSocket((location.protocol === 'https:' ? 'wss' : 'ws') + '://' + location.host);
-  ws.onopen = () => { sendMsg({ type: 'auth', token }); setTimeout(list, 400); };
+  ws.onopen = () => {
+    connected = true; reconnectWait = RECONNECT_MS;
+    setStatus('ok', 'Connected');
+    sendMsg({ type: 'auth', token });
+    setTimeout(list, 400);
+    startPolling();
+  };
   ws.onmessage = onMessage;
-  ws.onclose = () => { ws = null; };
+  ws.onclose = () => {
+    ws = null; connected = false;
+    stopPolling();
+    // Whatever was on screen is stale the moment the socket goes — clear the
+    // tiles rather than leaving a frozen call up.
+    stopWatching();
+    setStatus('down', 'Disconnected — reconnecting…');
+    reconnectTimer = setTimeout(() => { if (token) connect(); }, reconnectWait);
+    reconnectWait = Math.min(reconnectWait * 2, RECONNECT_MAX);
+  };
+  ws.onerror = () => { try { ws && ws.close(); } catch {} };
 }
+
+// Polls only while NOT watching someone: mid-call the list is not what you are
+// looking at, and re-rendering it under you is just noise.
+function startPolling() {
+  stopPolling();
+  pollTimer = setInterval(() => { if (connected && !watchingId) list(); }, POLL_MS);
+}
+function stopPolling() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
+
 const sendMsg = (o) => { if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify(o)); };
-const list = () => sendMsg({ type: 'observe-list' });
+// Refresh has to cope with a dead socket, or it silently does nothing — which
+// is precisely the failure this section exists to remove.
+const list = () => { if (connected) sendMsg({ type: 'observe-list' }); else connect(); };
 $('refresh').onclick = list;
 $('leave').onclick = () => { sendMsg({ type: 'observe-leave' }); stopWatching(); };
 
@@ -166,11 +224,13 @@ function renderSessions(sessions) {
 function watch(id) {
   stopWatching();
   sendMsg({ type: 'observe-join', id });
+  watchingId = id;
   $('watchId').textContent = '#' + id;
   show($('watching'), true); show($('leave'), true);
 }
 function stopWatching() {
   [...peers.keys()].forEach(removePeer);
+  watchingId = null;
   show($('watching'), false); show($('leave'), false);
 }
 
