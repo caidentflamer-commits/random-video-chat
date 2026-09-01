@@ -102,6 +102,47 @@ record (it's already durable in Supabase); don't delete it. Ban the account/IP
 as usual. This is the one category of report where "handle it later" has legal
 consequences.
 
+## Live observation (2026-08-31)
+
+An authorised moderator can join a call in progress from **`/watch.html`**,
+receive video, and ban a participant. They send nothing — no camera, no
+microphone, no chat — and **nothing is recorded anywhere**. There is no
+`MediaRecorder`, no canvas capture and no upload path on that page. Do not add
+one; that turns this into the thing declined below.
+
+- **Authorisation is the Supabase user id**, via `OBSERVER_USER_IDS`. The URL is
+  unlisted but is **not** the control — an account not on that list gets an empty
+  list and nothing else. Unset means nobody can observe.
+- **Participants are not told.** Deliberate: a visible indicator only tells
+  someone breaking the rules when to stop. This is why the disclosure in the
+  Terms is what makes the feature legitimate, and is not optional.
+- **Disclosed in `terms.html` §3 and `privacy.html`** ("Live moderation").
+  ⚠ **Caiden declined putting it at the age gate** (2026-08-31) on the grounds it
+  would turn people away. It was raised that clickwrap consent at the gate is
+  materially stronger than consent buried in terms, and that courts are
+  unimpressed by buried consent for contemporaneous interception. Decision
+  recorded, not re-litigated — but if a lawyer ever looks at this feature, that
+  is the first thing they will ask about.
+- **Every observation is logged and announced** — `OBSERVE …` in the server logs
+  plus a Discord ping naming the account and the session. That is what protects
+  the moderator if they are ever accused of something.
+- **It cannot damage a call.** The participant's browser treats the extra
+  connection as strictly optional (`addHiddenPeer` — no tile, not in `peers`, no
+  ICE recovery, no stats, silent failure), so a broken observation can never
+  interrupt, degrade or reveal itself through the UI.
+- **Observers are excluded from `N online` and `peakOnline`.** Someone watching
+  is not someone you can be matched with, and counting them would be the site
+  inventing a body.
+- **Chat is untouched.** Observers are deliberately not in `roomMembers()`, so
+  every room-scoped message — chat included — continues to ignore them. Only
+  WebRTC signalling crosses the boundary (`signalPeers()`).
+- **Bans go through `banIp()`** like every other path, so exemptions, the
+  durable record, the ledger and the Undo card all apply unchanged.
+
+⚠ **This is not a ban-review tool and cannot become one.** `banSocket()` closes
+the banned socket within 300ms, so by the time a notification reaches a phone
+the session is gone. It is a patrol tool.
+
 ## Asked for and declined: frames attached to the ban message (2026-08-31)
 
 The request was reasonable and the underlying complaint was right — you only

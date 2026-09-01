@@ -1535,6 +1535,33 @@ function makeTile(peerId, entry) {
 const ICE_RECOVERY_MS = 8000, MEDIA_FAIL_LIMIT = 3;
 let mediaFailures = 0;
 
+// A moderator watching this call (disclosed in the Terms). It is a normal peer
+// connection that sends our tracks and renders nothing: no tile, no entry in
+// `peers`, so it can't affect the layout, the peer count, the NSFW sampler or
+// anything else `render()` decides.
+//
+// Deliberately threadbare — no ICE recovery, no failure toast, no stats. If it
+// doesn't connect, it doesn't connect. Observation must never be able to
+// degrade or interrupt someone's actual call, so every failure here is silent.
+const hiddenPeers = new Map();
+const anyPeer = (id) => peers.get(id) || hiddenPeers.get(id);
+function addHiddenPeer(peerId, initiator) {
+  if (hiddenPeers.has(peerId)) return;
+  let pc;
+  try { pc = new RTCPeerConnection({ iceServers: iceConfig }); } catch { return; }
+  const entry = { pc, pending: [], chain: Promise.resolve(), hidden: true };
+  hiddenPeers.set(peerId, entry);
+  if (localStream) localStream.getTracks().forEach((t) => { try { pc.addTrack(t, localStream); } catch {} });
+  pc.onicecandidate = (e) => { if (e.candidate) wsSend({ type: 'signal', to: peerId, data: { candidate: e.candidate } }); };
+  if (initiator) negotiate(peerId);
+}
+function removeHiddenPeer(peerId) {
+  const entry = hiddenPeers.get(peerId);
+  if (!entry) return;
+  try { entry.pc.close(); } catch {}
+  hiddenPeers.delete(peerId);
+}
+
 function addPeer(peerId, initiator, friend) {
   if (peers.has(peerId)) return;
   let pc;
@@ -1609,7 +1636,7 @@ function handleMediaFailure(peerId) {
   clearChat(); setSearchReason('searching'); phase = 'searching'; render();
 }
 async function negotiate(peerId) {
-  const entry = peers.get(peerId); if (!entry) return;
+  const entry = anyPeer(peerId); if (!entry) return;
   try { const offer = await entry.pc.createOffer(); await entry.pc.setLocalDescription(offer); wsSend({ type: 'signal', to: peerId, data: { sdp: entry.pc.localDescription } }); }
   catch (e) { console.warn('Offer failed for', peerId, e); }
 }
@@ -1620,7 +1647,10 @@ async function negotiate(peerId) {
 // happen whenever the two arrived close together, and a cold server delivers
 // them bunched, so it happened for real: matched, chat fine, no media.
 function onSignal(from, data) {
-  let entry = peers.get(from);
+  let entry = anyPeer(from);
+  // The defensive fallback must not run for a hidden peer — answering a
+  // moderator's signal by building a visible tile is exactly the bug that would
+  // put a blank stranger on someone's screen.
   if (!entry) { addPeer(from, false, false); entry = peers.get(from); }   // signal before peer-join: answer defensively
   if (!entry) return;
   entry.chain = entry.chain
@@ -1660,7 +1690,12 @@ function removePeer(peerId) {
   els.remoteGrid.dataset.n = peers.size;
   render();
 }
-function clearStrangers() { [...peers.entries()].forEach(([id, e]) => { if (!e.friend) removePeer(id); }); }
+function clearStrangers() {
+  [...peers.entries()].forEach(([id, e]) => { if (!e.friend) removePeer(id); });
+  // Belt and braces: the server tears these down with peer-leave, but a
+  // connection to a moderator must never outlive the call it belonged to.
+  [...hiddenPeers.keys()].forEach(removeHiddenPeer);
+}
 
 // --- Timer ----------------------------------------------------------------
 function startTimer() {
@@ -1692,8 +1727,11 @@ function onMessage(event) {
     case 'party-created': party.active = true; party.code = msg.code; els.partyCodeText.textContent = msg.code; phase = 'idle'; render(); break;
     case 'party-joined': party.active = true; phase = 'idle'; render(); break;
     case 'party-error': toast(msg.reason || 'Could not join that room.'); break;
-    case 'peer-join': addPeer(msg.peerId, msg.initiator, msg.friend); break;
+    case 'peer-join':
+      if (msg.hidden) { addHiddenPeer(msg.peerId, msg.initiator); break; }
+      addPeer(msg.peerId, msg.initiator, msg.friend); break;
     case 'peer-leave': {
+      if (hiddenPeers.has(msg.peerId)) { removeHiddenPeer(msg.peerId); break; }
       const wasFriend = peers.get(msg.peerId)?.friend;
       removePeer(msg.peerId);
       if (wasFriend && !hasFriend()) { party.active = false; party.code = null; }

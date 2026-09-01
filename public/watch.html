@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="robots" content="noindex, nofollow" />
+<title>Olumie — moderation</title>
+<link rel="icon" href="/favicon.ico" />
+<link rel="stylesheet" href="/clarity.css" />
+<!--
+  Moderator observation. Unlisted, but the URL is NOT the control: the server
+  refuses observe-* to any account that isn't on OBSERVER_USER_IDS, so reaching
+  this page without an authorised Supabase login gets you an empty list.
+
+  Kept out of index.html on purpose — that file is downloaded by every visitor,
+  and shipping the watch UI to the people being watched is asking for it.
+
+  Nothing here records. There is no MediaRecorder, no canvas capture, no upload
+  path — frames render and are forgotten, the same as any other participant's.
+  Do not add one: see the CSAM note in MODERATION.md.
+-->
+<style>
+  /* clarity.css doesn't carry this — index.html defines it in its own style
+     block, so this page needs its own copy or nothing ever hides. */
+  .is-hidden { display: none !important; }
+  body { margin: 0; padding: 20px; background: var(--bg); color: var(--text); font-family: var(--font-sans); }
+  .wrap { max-width: 1100px; margin: 0 auto; display: flex; flex-direction: column; gap: 18px; }
+  .row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .sessions { display: flex; flex-direction: column; gap: 8px; }
+  .session { display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 12px 14px; background: var(--surface-2); border: 1px solid var(--border); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
+  .tile { position: relative; background: #000; aspect-ratio: 4/3; display: grid; place-items: center; }
+  .tile video { width: 100%; height: 100%; object-fit: cover; }
+  .tile .label { position: absolute; left: 8px; top: 8px; padding: 3px 8px; font-size: 12px;
+    background: rgba(0,0,0,.65); font-family: var(--font-mono); }
+  .tile .act { position: absolute; right: 8px; bottom: 8px; display: flex; gap: 6px; }
+  .empty { color: var(--text-subtle); font-size: 14px; }
+  .warn { padding: 12px 14px; background: var(--surface-2); border-left: 3px solid var(--warning); font-size: 14px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="row" style="justify-content:space-between">
+    <h1 class="c-h2" style="margin:0">Moderation</h1>
+    <div class="row">
+      <span class="c-help" id="whoami"></span>
+      <button class="c-btn c-btn--secondary c-btn--sm" id="signIn">Sign in with Google</button>
+      <button class="c-btn c-btn--ghost c-btn--sm is-hidden" id="signOut">Sign out</button>
+    </div>
+  </div>
+
+  <div class="warn">
+    Every session you open is logged and announced in Discord with your account
+    on it. Nothing is recorded — closing a tile forgets it.
+  </div>
+
+  <div class="row" style="justify-content:space-between">
+    <h2 class="c-h3" style="margin:0;font-size:var(--fs-md)">Live calls</h2>
+    <div class="row">
+      <button class="c-btn c-btn--secondary c-btn--sm" id="refresh">Refresh</button>
+      <button class="c-btn c-btn--ghost c-btn--sm is-hidden" id="leave">Stop watching</button>
+    </div>
+  </div>
+  <div class="sessions" id="sessions"><p class="empty">Sign in to see live calls.</p></div>
+
+  <div id="watching" class="is-hidden">
+    <h2 class="c-h3" style="font-size:var(--fs-md)">Watching <span id="watchId" class="c-mono"></span></h2>
+    <div class="grid" id="tiles"></div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+const show = (el, on) => el.classList.toggle('is-hidden', !on);
+let ws = null, sb = null, token = '', iceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
+const peers = new Map();   // peerId -> { pc, video, chain, pending }
+
+// ---- sign in ---------------------------------------------------------------
+// The same Supabase login as the main site. Authorisation is entirely
+// server-side: this page will happily connect for anyone, and the server simply
+// won't answer observe-* unless the account is on OBSERVER_USER_IDS.
+async function initAuth() {
+  let cfg;
+  try { cfg = await (await fetch('/config', { cache: 'no-store' })).json(); } catch { return; }
+  // createClient throws outright on an empty key, which used to surface as a
+  // dead page and an uncaught promise rejection in the console. A moderation
+  // console that fails silently is worse than one that says why.
+  if (!cfg.supabaseUrl || !cfg.supabaseAnonKey || !window.supabase) {
+    $('whoami').textContent = 'Sign-in unavailable — Supabase is not configured on this server.';
+    show($('signIn'), false);
+    return;
+  }
+  try { sb = window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey); }
+  catch (e) { $('whoami').textContent = 'Sign-in unavailable — ' + e.message; show($('signIn'), false); return; }
+  const { data } = await sb.auth.getSession();
+  applySession(data && data.session);
+  sb.auth.onAuthStateChange((_e, s) => applySession(s));
+}
+function applySession(session) {
+  token = (session && session.access_token) || '';
+  $('whoami').textContent = session ? (session.user.email || session.user.id) : '';
+  show($('signIn'), !token);
+  show($('signOut'), !!token);
+  if (token) connect();
+}
+$('signIn').onclick = () => sb && sb.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: location.href } });
+$('signOut').onclick = async () => { if (sb) await sb.auth.signOut(); location.reload(); };
+
+// ---- socket ----------------------------------------------------------------
+async function connect() {
+  try { iceServers = (await (await fetch('/ice', { cache: 'no-store' })).json()).iceServers || iceServers; } catch {}
+  if (ws && ws.readyState === ws.OPEN) return list();
+  ws = new WebSocket((location.protocol === 'https:' ? 'wss' : 'ws') + '://' + location.host);
+  ws.onopen = () => { sendMsg({ type: 'auth', token }); setTimeout(list, 400); };
+  ws.onmessage = onMessage;
+  ws.onclose = () => { ws = null; };
+}
+const sendMsg = (o) => { if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify(o)); };
+const list = () => sendMsg({ type: 'observe-list' });
+$('refresh').onclick = list;
+$('leave').onclick = () => { sendMsg({ type: 'observe-leave' }); stopWatching(); };
+
+function onMessage(ev) {
+  let msg; try { msg = JSON.parse(ev.data); } catch { return; }
+  switch (msg.type) {
+    case 'observe-list': renderSessions(msg.sessions || []); break;
+    case 'observe-error': alert(msg.reason || 'That did not work.'); stopWatching(); list(); break;
+    case 'observe-banned':
+      if (msg.ok) { const t = peers.get(msg.peerId); if (t && t.label) t.label.textContent += ' — BANNED'; }
+      else alert('Not banned — they are on the exempt list.');
+      break;
+    case 'peer-join': if (msg.observer) addPeer(msg.peerId); break;
+    case 'peer-leave': removePeer(msg.peerId); break;
+    case 'signal': onSignal(msg.from, msg.data); break;
+  }
+}
+
+// ---- the list --------------------------------------------------------------
+function renderSessions(sessions) {
+  const box = $('sessions');
+  box.innerHTML = '';
+  if (!sessions.length) {
+    box.innerHTML = '<p class="empty">No calls in progress. (If you expected some, this account may not be on the observer list.)</p>';
+    return;
+  }
+  sessions.forEach((s) => {
+    const el = document.createElement('div');
+    el.className = 'session';
+    const mins = Math.floor(s.secs / 60), secs = s.secs % 60;
+    el.innerHTML = '<span class="c-mono">#' + s.id + ' · ' + s.size + ' people · ' +
+      (mins ? mins + 'm ' : '') + secs + 's' + (s.watched ? ' · already being watched' : '') + '</span>';
+    const b = document.createElement('button');
+    b.className = 'c-btn c-btn--secondary c-btn--sm';
+    b.textContent = 'Watch';
+    b.onclick = () => watch(s.id);
+    el.appendChild(b);
+    box.appendChild(el);
+  });
+}
+function watch(id) {
+  stopWatching();
+  sendMsg({ type: 'observe-join', id });
+  $('watchId').textContent = '#' + id;
+  show($('watching'), true); show($('leave'), true);
+}
+function stopWatching() {
+  [...peers.keys()].forEach(removePeer);
+  show($('watching'), false); show($('leave'), false);
+}
+
+// ---- receive-only peers ----------------------------------------------------
+// No tracks are ever added: the participant offers, this side answers, and the
+// connection carries video one way. There is no capture path anywhere here.
+function addPeer(peerId) {
+  if (peers.has(peerId)) return;
+  const pc = new RTCPeerConnection({ iceServers });
+  const tile = document.createElement('div');
+  tile.className = 'tile';
+  const video = document.createElement('video');
+  video.autoplay = true; video.playsInline = true; video.muted = false;
+  const label = document.createElement('span');
+  label.className = 'label'; label.textContent = peerId;
+  const act = document.createElement('div');
+  act.className = 'act';
+  const ban = document.createElement('button');
+  ban.className = 'c-btn c-btn--danger-solid c-btn--sm';
+  ban.textContent = 'Ban';
+  ban.onclick = () => {
+    const reason = prompt('Reason for the ban (goes on the Discord card):', 'inappropriate behaviour');
+    if (reason === null) return;
+    sendMsg({ type: 'observe-ban', peerId, reason });
+  };
+  act.appendChild(ban);
+  tile.append(video, label, act);
+  $('tiles').appendChild(tile);
+
+  const entry = { pc, video, tile, label, pending: [], chain: Promise.resolve() };
+  peers.set(peerId, entry);
+  pc.ontrack = (e) => { video.srcObject = e.streams[0]; video.play().catch(() => {}); };
+  pc.onicecandidate = (e) => { if (e.candidate) sendMsg({ type: 'signal', to: peerId, data: { candidate: e.candidate } }); };
+}
+function removePeer(peerId) {
+  const e = peers.get(peerId); if (!e) return;
+  try { e.pc.close(); } catch {}
+  if (e.tile) e.tile.remove();
+  peers.delete(peerId);
+}
+
+// Same serialised handling as the main app: applying an SDP awaits, and a
+// candidate that lands in that gap has no remote description to attach to.
+function onSignal(from, data) {
+  const entry = peers.get(from); if (!entry) return;
+  entry.chain = entry.chain.then(() => applySignal(from, entry, data)).catch((e) => console.warn('signal', e));
+}
+async function applySignal(from, entry, data) {
+  if (entry.pc.signalingState === 'closed') return;
+  if (data.sdp) {
+    await entry.pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+    const queued = entry.pending; entry.pending = [];
+    for (const c of queued) { try { await entry.pc.addIceCandidate(new RTCIceCandidate(c)); } catch {} }
+    if (data.sdp.type === 'offer') {
+      const ans = await entry.pc.createAnswer();
+      await entry.pc.setLocalDescription(ans);
+      sendMsg({ type: 'signal', to: from, data: { sdp: entry.pc.localDescription } });
+    }
+  } else if (data.candidate) {
+    if (!entry.pc.remoteDescription) { entry.pending.push(data.candidate); return; }
+    try { await entry.pc.addIceCandidate(new RTCIceCandidate(data.candidate)); } catch {}
+  }
+}
+
+initAuth();
+</script>
+</body>
+</html>
